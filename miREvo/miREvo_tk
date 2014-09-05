@@ -1,0 +1,1939 @@
+#!/usr/bin/perl -w
+
+use strict;
+use Tk 800.600;
+use Tk::ROText;
+use Tk::Adjuster;
+use Tk::PNG;
+use Tk::Dialog;
+use Bio::AlignIO;
+#--------------------------------------------------
+# use Tk::PathEntry;
+#-------------------------------------------------- 
+use File::Basename;
+use MyMod::Bio::Tools::SeqAna;
+use Data::Dumper;
+use MyMod::Bio::Tools::RNA;
+use Cwd;
+use subs qw/menubarEtal/;
+
+#=============================================== globe variable ==============================================
+
+my $progDir = $ENV{'MIREVO'}; 
+my $fastaFileType =[['Fasta Files', ["*.fa *.fas *.fasta *.fna"]]];
+my $bwtFileType =[['ebwt Files', ["*.ebwt *.fa *.fas *.fasta *.fna"]]];
+my $mafFileType =[['maf Files', ["*.maf"]]];
+my $chainFileType =[['chain Files', ["*.chain"]]];
+my $path = cwd();
+my $outDir = ".";
+my $projDir = "";
+my $startdir = "";
+my $projName = "";
+my $cmd;
+my ($mainFrame, $overviewFrm, $btmFrm, $parameterFrm, $runFrm, $procFrm, 
+	$exitFrm, $frmInRunFrm, %processBtm, $showBtmPred, $showBtmHomo, $titleFrmProc, $textProc,
+	$cpuEntryBwt,$seedEntryBwt, $misEntryBwt, $repEntryBwt,
+	$tempEntryPred,	$modeEntryPred, $speciesEntryPred, $cutEntryPred, $gearEntryPred, $randEntryPred,
+	$tempEntryHomo
+);
+
+my %processBtmCmd= ("Filter" => \&filterBtmCmd, "Predict" => \&predictBtmCmd, "Homoseq" => \&homoseqBtmCmd);
+my %frmInited= ("Filter" => 0, "Predict" => 0, "Homoseq" => 0, "New"=>0, "Open"=>0, "Process"=>0,"Project"=>0);
+my %btmInitState = ("Filter" => 1, "Predict" => 1, "Homoseq" => 1);
+my @btmState=("disabled","normal");
+
+#for result display
+my (%readsStat,@mirnaAcc,$seed,$matureSeq, $mirnaAlignSeq,$matureAlignSeq,$seedAlignSeq,$mirnaSeq, $mirnaSst, $mirbaseAnno,
+	$homoSeqInfo, $homoSeqStructInfo, $posInfo,
+	$readsInfo,$pngFileName,$pngImages,%knownExp, %predictExp);
+
+
+my $mw = MainWindow->new;
+$mw->geometry("500x300");
+$mw->title("miREvo");
+
+use vars qw($fixedfont);
+#--------------------------------------------------
+# $fixedfont = $mw->optionGet("fixedFont","FixedFont") || "Courier 20";
+#-------------------------------------------------- 
+
+#====================================  Filter Btm Frame  ===========================================================
+my $entryInfoInFilter = {"reads"=>"Select an reads file: ",
+						"db"    => 'Bowtie index for repeat database file:   ',
+						"hp" => 'Bowtie index for known miRNA precursor sequence in your species:',
+						"mature" => 'fasta sequence for known miRNA mature sequence in your species:'};
+my $entryValueInFilter = {"reads"=>'Sequencing reads, adapter cleaned, collapsed fasta format', 
+						  "db"=>'tRNA, scRNA, snRNA, snoRNA, etc.',
+						"hp" => 'Bowtie index for known miRNA precursor sequence in your species:',
+						"mature" => 'fasta sequence for known miRNA mature sequence in your species:'};
+my (%frmInFilter, %entryInFilter, %btmInFilter, %loadDlgInFilter);
+
+sub runCmdFilter{
+	my $entryRef = \%entryInFilter;
+	my $reads=$entryRef->{"reads"}->get();
+	my $db=$entryRef->{"db"}->get();
+	my $hp=$entryRef->{"hp"}->get();
+	my $mature=$entryRef->{"mature"}->get();
+	my $out = $projDir;
+	my $mis = $misEntryBwt->get();
+	my $cpu = $cpuEntryBwt->get();
+
+	tie *STDOUT, ref $textProc, $textProc;
+	if($db eq 'tRNA, scRNA, snRNA, snoRNA, etc.'){
+		printf "Warrning, no repeat database provide\n";
+		printf "miREvo will skip this step\n";
+		printf "\n";
+	}elsif(! -s $db.".1.ebwt"){
+		printf "Can't find the Bowtie index for $db.\n";
+		printf "Pleate build the $db firstly using a command like:\n";
+		printf " bowtie-build -f $db.fasta $db\n";
+		return;
+	}
+
+	if( -s $reads ){
+		$cmd= "$progDir/miREvo filter -i $reads -d $db -H $hp -M $mature -o $out -v $mis -p $cpu";
+		#--------------------------------------------------
+		# tie *STDERR, ref $textProc, $textProc;
+		#-------------------------------------------------- 
+		printf "%s\n", "Starting filter reads";
+		printf "%s\n", $cmd;
+		open (FH, "-|","$cmd") or die "could not execute! $!\n"; 
+		while (<FH>) {
+			chomp;
+			printf "%s\n",$_;
+		}
+		close FH;
+		$processBtm{"Predict"}->configure(-state=> "normal"); # Change the text	
+	}else{
+		printf "Please specify an available reads file name.\n";
+		return;
+	}
+}
+
+sub resetInputFilter {
+	$entryValueInFilter = {"reads"=>'Sequencing reads, adapter cleaned, collapsed fasta format', 
+						  "db"=>'tRNA, scRNA, snRNA, snoRNA, etc.',
+						"hp" => 'Bowtie index for known miRNA precursor sequence in your species:',
+						"mature" => 'fasta sequence for known miRNA mature sequence in your species:',
+						  };
+	$misEntryBwt->configure(-textvariable=>0);
+	$cpuEntryBwt->configure(-textvariable=>1);
+}
+
+#====================================  Predict Btm Frama ===========================================================
+my $entryInfoInPred = {"ref"=>'Bowtie index for genome sequences.',
+						"mature"=>'Select an mature file.',
+						"other"=>'Select an mature file.'};
+my $entryValueInPred= {"ref"=>'Reference sequence for your specie:  ',
+						"mature"=>'Mature sequence for your specie:  ',
+						"other"=>'Mature sequence for related specie:  '	};
+
+my (%frmInPred, %entryInPred, %btmInPred, %loadDlgInPred);
+
+sub runCmdPred{
+	my $entryRef = \%entryInPred;
+	my $out = $projDir;
+	my $ref=$entryRef->{"ref"}->get();
+	my $mature=$entryRef->{"mature"}->get();
+	my $other=$entryRef->{"other"}->get();
+
+	my $temp = $tempEntryPred->get();
+	my $cutoff = $cutEntryPred->get();
+	my $gear = $gearEntryPred->get();
+	my $rand = $randEntryPred->get();
+	my $mode= $modeEntryPred->get();
+	my $species= $speciesEntryPred->get();
+
+	my $cpu = $cpuEntryBwt->get();
+	my $maxrep = $repEntryBwt->get();
+
+
+	${RNA::temperature} = $temp;
+
+	tie *STDOUT, ref $textProc, $textProc;
+
+	if(! -s $ref.".1.ebwt"){
+		printf "Can't find the Bowtie index for $ref.\n";
+		printf "Pleate build the $ref firstly using a command like:\n";
+		printf "    bowtie-build -f $ref.fasta $ref\n";
+		printf "\n";
+		return;
+	}
+
+	if ( ! -s "$out/filter.kn.nomap.fas"){
+		printf "Project $projName has not been created yet,";
+		printf "Please run the \"filter\" step firstly to create a new project:";
+		printf "\n";
+		printf "\n";
+		return;
+	}
+
+	if(! -s $other){
+		printf "Please povide a available fasta file for mature sequence of related species";
+		printf "\n";
+		printf "\n";
+		return;
+	}
+
+	if( -s $ref || -s $ref.".fas" || -s $ref.".fa" || -s $ref.".fasta" ){
+		if( $rand == 0){
+			$cmd= "$progDir/miREvo predict -r $ref -o $out -M $mature -s $other -g $gear -u $species -t $temp -s $cutoff -c -m $mode -p $cpu -k $maxrep ";
+		}else{
+			$cmd= "$progDir/miREvo predict -r $ref -o $out -M $mature -s $other -g $gear -u $species -t $temp -s $cutoff -m $mode -p $cpu -k $maxrep ";
+		}
+		#--------------------------------------------------
+		# tie *STDERR, ref $textProc, $textProc;
+		#-------------------------------------------------- 
+
+		printf "%s\n", "Starting predict miRNA";
+		printf "%s\n", $cmd;
+		open (FH, "-|","$cmd") or die "could not execute! $!"; 
+		while (<FH>) {
+			chomp;
+			printf "%s\n",$_;
+		}
+		close FH;
+		$processBtm{"Homoseq"}->configure(-state=> "normal"); # Change the text	
+	}else{
+		printf "Can't find the reference sequences for $ref.\n";
+		printf "Please specify an available reference file, such as.\n";
+		printf "$ref.fas, $ref.fa, $ref.fasta, etc.\n";
+	}
+}
+
+sub resetInputPred {
+	$entryValueInPred= {"ref"=>'Reference sequence for your specie:  ',
+						"mature"=>'Mature sequence for your specie:  ',
+						"other"=>'Mature sequence for related specie:  '	};
+	$misEntryBwt->configure(-textvariable=>0);
+	$cpuEntryBwt->configure(-textvariable=>1);
+	$repEntryBwt->configure(-textvariable=>5);
+	$seedEntryBwt->configure(-textvariable=>0);
+	$tempEntryHomo->configure(-textvariable=>22);
+	$modeEntryPred->configure(-textvariable=>1);
+	$speciesEntryPred->configure(-textvariable=>"");
+	$cutEntryPred->configure(-textvariable=>1);
+	$gearEntryPred->configure(-textvariable=>50000);
+	$randEntryPred->configure(-textvariable=>0);
+}
+
+#====================================  Homoseq Btm frame ===========================================================
+my $entryValueInHomo= {'reads'=>'Sequence reads; for newly predicted miRNAs, the file filter.db.nomap.fas is recommended', 
+						"ref" => 'Reference sequence for your species', 
+						"maf" => 'MAF file',
+						"hp" => 'Bowtie index for known miRNA precursor sequence in your species:',
+						"mature" => 'fasta sequence for known miRNA mature sequence in your species:',
+						"other"=>'Mature sequence for related species:  ',
+						"chain" => 'liftOver chain file' };
+
+my $entryInfoInHomo= { 	"reads"=>  'Select an reads file: ',
+						"ref"  =>  'Select an reference file: ',
+						"maf"  =>  'Select an maf file: ',
+						"hp"  =>  'Select Bowtie index for known miRNA precursor file: ',
+						"mature"=> 'Select an mature file: ',
+						"other"=> 'Select an mature file from other species: ',
+						"chain" => 'Select an liftOver chain file: '};
+my (%frmInHomo, %entryInHomo, %btmInHomo, %loadDlgInHomo);
+
+sub runCmdHomo{
+	my $entryRef = \%entryInHomo;
+	my $out = $projDir;
+	my $reads=$entryRef->{"reads"}->get();
+	my $ref=$entryRef->{"ref"}->get();
+	my $maf=$entryRef->{"maf"}->get();
+	my $hp=$entryRef->{"hp"}->get();
+	my $mature=$entryRef->{"mature"}->get();
+	my $other=$entryRef->{"other"}->get();
+	my $chain=$entryRef->{"chain"}->get();
+	my $cpu = $cpuEntryBwt->get();
+	my $temp = $tempEntryHomo->get();
+	${RNA::temperature} = $temp;
+	tie *STDOUT, ref $textProc, $textProc;
+	if(! $maf =~ /\.maf$/){
+		printf "The file $maf properly is not a appropriate MAF file.\n";
+		printf "Please provide an available MAF file, such as dm3.maf.\n";
+		printf "\n";
+		return;
+	}elsif(! -s $maf){
+		printf "Can't find the MAF file for $maf, exit\n";
+		printf "\n";
+		return;
+	}
+
+	if(! -s $hp.".1.ebwt"){
+		printf "Can't find the Bowtie index for $hp.\n";
+		printf "Pleate build the $hp firstly using a command like:\n";
+		printf "    bowtie-build -f $hp.fasta $hp\n";
+		printf "\n";
+		return;
+	}
+
+
+	if(-s $ref && -s $maf){
+		$cmd="$progDir/miREvo homoseq -i $reads -H $hp -M $mature -r $ref -m $maf -c $chain -s $other -o $out -p $cpu -t $temp";
+		#--------------------------------------------------
+		# tie *STDERR, ref $textProc, $textProc;
+		#-------------------------------------------------- 
+
+		printf "%s\n", "Starting find homology sequence of miRNA";
+		printf "%s\n", $cmd;
+
+		open (FH, "-|","$cmd") or die "could not execute! $!\n"; 
+		while (<FH>) {
+			chomp;
+			printf "%s\n",$_;
+		}
+		close FH;
+	}
+}
+
+sub resetInputHomo{
+	$entryValueInHomo= {'reads'=>'Sequence reads; for newly predicted miRNAs, the file filter.db.nomap.fas is recommended', 
+						"ref" => 'Reference sequence for your species', 
+						"maf" => 'MAF file',
+						"hp" => 'Bowtie index for known miRNA precursor sequence in your species:',
+						"mature" => 'fasta sequence for known miRNA mature sequence in your species:',
+						"other"=>'Mature sequence for related species:  ',
+						"chain" => 'liftOver chain file' };
+	$tempEntryHomo->configure(-textvariable=>22);
+	$cpuEntryBwt->configure(-textvariable=>1);
+}
+
+#====================================  Main Loop ===========================================================
+$mainFrame = $mw->Frame()->pack(-side => 'top', -fill => 'both',-expand=>1);
+&initProjFrm();
+MainLoop;
+exit;
+
+#======================================================== subroutines ===============================================================
+
+sub runNewProj{
+	return(0)  if ($frmInited{"New"});
+	my $newTop = $mainFrame-> Toplevel(-title=>"New Project"); #Make the window
+	#Put things in it
+	$newTop -> Label(-text=>"\nPlease enter a new project name and select an existing location to create a new project."
+			) -> pack(-anchor=>'nw');
+	$newTop -> Label(-text=>"A new project will be created at the selected location\n"
+			) -> pack(-anchor=>'nw');
+
+	my $entryValueInNew= {"name"=>'', "outDir"=>'.' };
+	my $entryInfoInNew= {"name"=>"Enter an project name:",
+						 "outDir"=>'Select your output dir:'};
+	my (%frmInNew, %entryInNew, %btmInNew, %loadDlgInNew);
+
+	foreach my $key (qw/name outDir/){
+		$frmInNew{$key} = $newTop->Frame()->pack(-fill => 'x');
+		$frmInNew{$key}{"left"}  = $frmInNew{$key}->Frame(-width => "150", -label => $entryInfoInNew->{$key})
+			->pack(-side => 'left' );
+		$frmInNew{$key}{"right"} = $frmInNew{$key}->Frame()->pack(-side => 'left', -expand => 1,  -fill=> 'x');
+		$entryInNew{$key} = $frmInNew{$key}{"right"}->Entry(-textvariable=>\$entryValueInNew->{$key},-width=>50, -justify=> 'left')
+			->pack(-side => 'left');
+		if ( $key eq "outDir" ) 
+		{
+			$frmInNew{$key}{"right"}->Button(-text=>"Browse", 
+				-command => sub{
+					$entryValueInNew->{$key}= $frmInNew{$key}->chooseDirectory( -initialdir => $startdir);
+				} # end -command 
+			)->pack(-side => "left");
+		}
+	}
+
+	#An option to close the window.
+	my $btmClose = $newTop -> Button(-text=>"Back", 
+		-command => sub { 
+			$frmInited{"New"} = 0;
+			$frmInited{"Open"} = 0;
+			destroy $newTop; 
+		} ) -> pack(-sid=>'right');
+	my $btmOk = $newTop -> Button(-text=>"Ok", 
+		-command => sub { 
+			$frmInited{"New"} = 0;
+			$frmInited{"Open"} = 0;
+			$frmInited{"Project"} = 0;
+			$projName = $entryInNew{"name"} -> get();
+
+			$outDir = $entryInNew{"outDir"} -> get();
+			my $projNameLen = length($projName);
+			if ($projNameLen > 3 ) {
+				my $answer = $mw->Dialog(-title => 'Error', 
+					-text => "Error: Project name \"$projName($projNameLen letters)\"too long, please specify a 3 letter code as the project name", 
+				-default_button => 'Yes', -buttons => [ 'Yes', 'No'], 
+				-bitmap => 'question' )->Show( );
+				if ($answer eq 'No') {
+					destroy $newTop; 
+					$mw->destroy;
+				}
+			}elsif ($projName eq "" ) {
+				my $answer = $mw->Dialog(-title => 'Error', 
+					-text => "Error: empty project name, do you want to continue...", 
+				-default_button => 'Yes', -buttons => [ 'Yes', 'No'], 
+				-bitmap => 'question' )->Show( );
+				if ($answer eq 'No') {
+					destroy $newTop; 
+					$mw->destroy;
+				}
+		   }else{
+			   	$projDir = $outDir."/".$projName;
+				destroy $newTop; 
+				&initProcessFrm;
+		   }
+		} ) -> pack(-sid=>'right');
+	
+	$frmInited{"New"} = 1;
+	$frmInited{"Open"} = 1;
+}
+
+sub runOpenProj{
+	return(0)  if ($frmInited{"Open"});
+	my $newTop = $mainFrame-> Toplevel(-title=>"Open Project"); #Make the window
+	#Put things in it
+	my $topLab = $newTop -> Label(-text=>"Select a location to open a existing project.\n"
+		) -> pack(-anchor=>'nw');
+
+	my $entryValueInOpen= { "outDir"=>'./' };
+	my $entryInfoInOpen= {"outDir"=>'Select your project dir:'};
+	my (%frmInOpen, %entryInOpen, %btmInOpen, %loadDlgInOpen);
+
+	$frmInOpen{"outDir"} = $newTop->Frame()->pack(-fill => 'x');
+	$frmInOpen{"outDir"}{"left"}  = $frmInOpen{"outDir"}->Frame(-width => "150", -label => $entryInfoInOpen->{"outDir"})
+		->pack(-side => 'left' );
+	$frmInOpen{"outDir"}{"right"} = $frmInOpen{"outDir"}->Frame()->pack(-side => 'left', -expand => 1,  -fill=> 'x');
+	$entryInOpen{"outDir"} = $frmInOpen{"outDir"}{"right"}->Entry(-textvariable=>\$entryValueInOpen->{"outDir"},-width=>50, -justify=> 'left')
+		->pack(-side => 'left');
+	$frmInOpen{"outDir"}{"right"}->Button(-text=>"Browse", 
+										-command => sub{
+											$entryValueInOpen->{"outDir"}= $frmInOpen{"outDir"}->chooseDirectory( -initialdir => $startdir);
+										} # end -command 
+								)->pack(-side => "left");
+
+	my $btmClose = $newTop -> Button(-text=>"Back", 
+		-command => sub {
+			$frmInited{"New"} = 0;
+			$frmInited{"Open"} = 0;
+			destroy $newTop; 
+		} ) -> pack(-sid=>'right');
+	my $btmOk = $newTop -> Button(-text=>"Ok", 
+		-command => sub { 
+			$frmInited{"New"} = 0;
+			$frmInited{"Open"} = 0;
+			$frmInited{"Project"} = 0;
+			$outDir = $entryInOpen{"outDir"} -> get();
+			$projDir = $outDir;
+			if( ! -e "$projDir/" ){
+				my $answer = $mw->Dialog(-title => 'Error', 
+					-text => "Can not open project $projDir, do you want to continue...", 
+					-default_button => 'Yes', -buttons => [ 'Yes', 'No'], 
+					-bitmap => 'question' )->Show( );
+				if ($answer eq 'No') {
+					destroy $newTop; 
+					$mw->destroy;
+				}
+		   }else{
+				destroy $newTop; 
+				if( -e "$projDir/homo_image/"){
+					&displayHomoTop;
+				}else{
+					&displayPredTop;
+				}
+		   }
+		} ) -> pack(-sid=>'right');
+
+	$frmInited{"New"} = 1;
+	$frmInited{"Open"} = 1;
+}
+
+sub runAboutProj{
+	my $answer = $mw->Dialog(-title => 'About miREvo', 
+		-text => "miREvo is a Perl/TK software base on linux platform for miRNA analysis.\n wenming126\@gmail.com",
+		-default_button => 'OK', -buttons => [ 'OK'], 
+		-bitmap => 'question' )->Show( );
+}
+
+sub runExitProj{
+	$mw->destroy;
+}
+
+sub initProjFrm{
+	return(0) if ($frmInited{"Project"});
+	$mainFrame->destroy if Tk::Exists($mainFrame);
+	$mw->geometry("550x420");
+	$mainFrame = $mw->Frame()->pack(-side => 'top', -fill => 'both',-expand=>1);
+	my $labelFrm = $mainFrame->Frame()->pack(-side => 'top', -fill => 'both',-expand=>1);
+	$labelFrm->Label(-text=>"\nmiREvo",-font=>[-family=>'olcursor',-size=>40,-weight=>'bold',-slant=>'o']
+			)-> pack(-side=>'top',-anchor =>'center');
+	$labelFrm -> Label(-text=>"\n\tSelect 'New' to create a project or 'Open' to view a project\n\n",
+			)-> pack(-side=>'top',-anchor =>'nw');
+
+	my $btmFrm = $mainFrame->Frame(-height=>15)->pack(-side => 'top', -fill => 'both',-expand=>1);
+	my (%btmKeys,%img,%btm,%lab,%fun,%txt);
+
+	$btmKeys{1}{1} = "New";
+	$btmKeys{1}{2} = "About";
+	$btmKeys{2}{1} = "Open";
+	$btmKeys{2}{2} = "Exit";
+
+	$img{New}= $btmFrm ->Photo(-file=>"$progDir/resource/new.png");
+	$img{Open}= $btmFrm ->Photo(-file=>"$progDir/resource/open.png");
+	$img{About}= $btmFrm ->Photo(-file=>"$progDir/resource/about.png");
+	$img{Exit}= $btmFrm ->Photo(-file=>"$progDir/resource/exit.png");
+
+	$fun{New}= \&runNewProj;
+	$fun{Open}= \&runOpenProj;
+	$fun{About}= \&runAboutProj;
+	$fun{Exit}= \&runExitProj;
+
+	$txt{New}  ="Create a New project   ";
+	$txt{Open} ="Open a existing project";
+	$txt{About}="About miREvo";
+	$txt{Exit} ="Exit miREvo";
+
+	my $text = $btmFrm->Text(-borderwidth =>0 )->pack(-fill=>'both',-expand=>1);
+	for(my $i=1; $i<=2; ++$i){
+		for(my $j=1; $j<=2; ++$j){
+			my $key = $btmKeys{$i}{$j};
+			$lab{$key}=$text ->Label(-text => "        ", -borderwidth =>0, -relief => 'groove');
+			$text->windowCreate('end', -window => $lab{$key});
+			$btm{$key} = $text ->Button(-image => $img{$key},-command => $fun{$key});
+			$text->windowCreate('end', -window => $btm{$key});
+			$lab{$key}=$text ->Label(-text => "    $txt{$key}", -borderwidth =>0, -relief => 'groove');
+			$text->windowCreate('end', -window => $lab{$key});
+		}
+		$text->insert('end', "\n");
+	}
+
+	$frmInited{"Project"} = 1;
+}
+
+sub initProcessFrm{
+	return(0)  if ($frmInited{"Process"});
+	$mainFrame->destroy if Tk::Exists($mainFrame);
+	$mainFrame = $mw->Frame()->pack(-side => 'top', -fill => 'both',-expand=>1);
+	$mw->geometry("900x700");
+	$overviewFrm = $mainFrame->Frame()->packAdjust(-fill => 'x');
+	$overviewFrm->Label(-text=>"    Overview:",-anchor=>'w')->pack(-anchor=>'nw');
+	$overviewFrm->Label(-text=>"    	Project name: $projName",-anchor=>'w')->pack(-anchor=>'nw');
+	$overviewFrm->Label(-text=>"    	Project path: $projDir\n",-anchor=>'w')->pack(-anchor=>'nw');
+	$btmFrm = $mainFrame->Frame()->pack(-fill => 'x');
+	$runFrm = $mainFrame->Frame()->packAdjust(-fill => 'both', -expand => 1);
+	$procFrm = $mainFrame->Frame(-background => "white")->pack(-fill => 'x',-expand => 1);
+	$exitFrm = $mainFrame->Frame()->pack(-side => 'right');
+	foreach my $key (qw/Filter Predict Homoseq/) {
+		$processBtm{$key} = $btmFrm->Button(-text=>"$key", -state => $btmState[$btmInitState{$key}],-command => $processBtmCmd{$key}
+					)->pack(-side => "left");
+	}
+	#filter Btm are available at the begining.
+	&filterBtmCmd();
+	my $emptyFrmProc= $procFrm->Frame()->pack(-fill => 'x');
+	$titleFrmProc= $procFrm->Frame()->pack(-fill => 'x');
+	$titleFrmProc->Label(-text=>"Process",-anchor=>'w')->pack(-expand => 1, -fill => 'x');
+
+	# Create the vertical Scrollbar
+	my $textFrmProc = $procFrm->Frame()->pack(-fill => 'both',-expand =>1);
+	my $scrollBar = $textFrmProc->Scrollbar();
+	$textProc = $textFrmProc->ROText(-wrap => 'none',-yscrollcommand => ['set',$scrollBar], -height => 15);
+	#Configure the Scrollbar to talk to the Listbox widget
+	$scrollBar->configure(-command => ['yview' => $textProc]);
+	#Pack the Scrollbar first so that it doesn't disappear when we resize
+	$scrollBar->pack(-side => 'right', -fill => 'y');
+	$textProc->pack(-expand => 1, -side => 'left', -fill => 'x');
+
+	$exitFrm->Button(-text => 'Exit',
+					 -command => sub {
+					   $mw->destroy;
+					 })->pack(-side => "right");
+	$exitFrm->Button(-text => 'Back',
+						 -command => \&initProjFrm
+					 )->pack(-side => "right");
+}
+
+sub filterBtmCmd{
+	return(0)  if ($frmInited{"Filter"});
+	$frmInRunFrm->destroy if Tk::Exists($frmInRunFrm);
+	$frmInRunFrm = $runFrm->Frame()->pack(-fill => 'both',-expand => 1);
+	foreach my $key (qw/reads db hp mature/){
+		$frmInFilter{$key} = $frmInRunFrm->Frame()->pack(-fill => 'x');
+		$frmInFilter{$key}{"left"}  = $frmInFilter{$key}->Frame(-width => "150", -label => $entryInfoInFilter->{$key})
+			->pack(-side => 'left' );
+		$frmInFilter{$key}{"right"} = $frmInFilter{$key}->Frame()->pack(-side => 'left', -expand => 1,  -fill=> 'x');
+		$entryInFilter{$key} = $frmInFilter{$key}{"right"}->Entry(-textvariable=>\$entryValueInFilter->{$key},-width=>50, -justify=> 'left')
+			->pack(-side => 'left');
+		if ($key ne 'reads' && $key ne 'mature'){
+			$frmInFilter{$key}{"right"}->Button(-text=>"Browse", 
+				-command => sub{
+						my $tmpFile = $frmInFilter{$key}->getOpenFile( -filetypes=>$bwtFileType, -initialdir => $startdir);
+						if (defined($tmpFile)){
+							$tmpFile =~ s/\.fa$//;
+							$tmpFile =~ s/\.fas$//;
+							$tmpFile =~ s/\.fasta$//;
+							$tmpFile =~ s/(.rev)?.\d.ebwt//;
+							$entryValueInFilter->{$key}= $tmpFile;
+						}
+			})->pack(-side => "left");
+		}else{
+			$frmInFilter{$key}{"right"}->Button(-text=>"Browse", 
+				-command => sub{
+						$entryValueInFilter->{$key} = $frmInFilter{$key}->getOpenFile( -filetypes=>$bwtFileType, -initialdir => $startdir);
+				}
+			)->pack(-side => "left");
+		}
+	}
+
+	my $runFrmFilter= $frmInRunFrm->Frame()->pack(-fill => 'x');
+	my $runBtmFilter = $runFrmFilter->Button(-text => 'Run', -command => \&runCmdFilter
+	    )->pack(-side => "right" );
+	my $resetBtmFilter = $runFrmFilter->Button(-text => 'Reset', -command => \&resetInputFilter
+		)->pack(-side => "right" );
+
+	my $paraFrmFilter= $frmInRunFrm->Frame()->pack(-fill => 'x');
+	$paraFrmFilter->Label(-text=>"    Parameters:",-anchor=>'w')->pack( -side=>'top',-expand => 1, -fill => 'x');
+
+	# options for Bowtie
+	$paraFrmFilter->Label(-text=>"        Options for Bowtie:",-anchor => 'w')->pack(-side=>'top',-expand => 1, -fill => 'x');
+
+	my $paraCpuFrmFilter = $paraFrmFilter->Frame() -> pack(-fill => 'x');
+	$paraCpuFrmFilter->Label (-text=>"Multithreads:", -width => 25, -padx => 10)->pack(-side=> 'left');
+	$cpuEntryBwt = $paraCpuFrmFilter->Entry( -textvariable=>1,-width=>3,-justify=>'left') ->pack(-side => 'left');
+	$paraCpuFrmFilter->Label (-text=>" number of threads to use")->pack(-side=> 'left');
+
+	my $paraMisFrmFilter = $paraFrmFilter->Frame() -> pack(-fill => 'x');
+	$paraMisFrmFilter->Label (-text=>"Mismatches:", -width => 25, -padx => 10)->pack(-side=> 'left');
+	$misEntryBwt = $paraMisFrmFilter->Entry(-textvariable=>0,-width=>3,-justify=>'left') ->pack(-side => 'left');
+	$paraMisFrmFilter->Label (-text=>" maximum mismatches allowed on a read")->pack(-side=> 'left');
+
+	$frmInited{"Filter"} = 1;
+	$frmInited{"Predict"} = 0;
+	$frmInited{"Homoseq"} = 0;
+}
+
+sub predictBtmCmd{
+	return(0)  if ($frmInited{"Predict"});
+	$frmInRunFrm->destroy if Tk::Exists($frmInRunFrm);
+	$frmInRunFrm = $runFrm ->Frame()->pack(-fill => 'both',-expand => 1);
+	foreach my $key (qw/ref mature other/) {
+		$frmInPred{$key} = $frmInRunFrm->Frame()->pack(-fill => 'x');
+		$frmInPred{$key}{"left"}  = $frmInPred{$key}->Frame(-width => "150", -label => $entryInfoInPred->{$key})
+			->pack(-side => 'left' );
+		$frmInPred{$key}{"right"} = $frmInPred{$key}->Frame()->pack(-side => 'left', -expand => 1,  -fill=> 'x');
+		$entryInPred{$key} = $frmInPred{$key}{"right"}->Entry(-textvariable=>\$entryValueInPred->{$key},-width=>50, -justify=> 'left')
+			->pack(-side => 'left');
+		if($key eq 'mature' || $key eq 'other' ){
+			$frmInPred{$key}{"right"}->Button(-text=>"Browse", 
+					-command => sub{
+						$entryValueInPred->{$key}= $frmInPred{$key}->getOpenFile(-filetypes=>$fastaFileType,  -initialdir => $startdir);
+					} )->pack(-side => "left");
+		}else{
+			$frmInPred{$key}{"right"}->Button(-text=>"Browse", 
+					-command => sub{
+						my  $tmpFile = $frmInPred{$key}->getOpenFile(-filetypes=>$bwtFileType,  -initialdir => $startdir);
+						if (defined($tmpFile)){
+							$tmpFile =~ s/\.fa$//;
+							$tmpFile =~ s/\.fas$//;
+							$tmpFile =~ s/\.fasta$//;
+							$tmpFile =~ s/(.rev)?.\d.ebwt//;
+							$entryValueInPred->{$key}= $tmpFile;
+						}
+			} )->pack(-side => "left");
+		}
+	}
+
+	my $runFrmPred = $frmInRunFrm->Frame()->pack(-fill => 'x');
+	my $runBtmPred = $runFrmPred->Button(-text => 'Run', -command => \&runCmdPred
+					   )->pack(-side => "right" );
+	$showBtmPred = $runFrmPred->Button(-text => 'Display Result', -state=> "normal", -command => \&displayPredTop
+					   )->pack(-side => "right" );
+	my $resetBtmPred = $runFrmPred->Button(-text => 'Reset', -command => \&resetInputPred
+					)->pack(-side => "right" );
+
+	my $paraFrmPred= $frmInRunFrm->Frame()->pack(-fill => 'x');
+	$paraFrmPred->Label(-text=>"    Parameters:",-anchor=>'w')->pack( -side=>'top',-expand => 1, -fill => 'x');
+
+	# options for miRNA prediction
+	$paraFrmPred->Label(-text=>"        Options for miRNA prediction:",-anchor => 'w')->pack(-side=>'top',-expand => 1, -fill => 'x');
+
+	my $paraTempFrmPred = $paraFrmPred->Frame() -> pack(-fill => 'x');
+	$paraTempFrmPred->Label   (-text=>"Temperature", -width => 25,-padx=>10)->pack(-side=> 'left');
+	$tempEntryPred = $paraTempFrmPred->Entry(-textvariable=>22, -width=>3,-justify=>'left') ->pack(-side => 'left');
+	$paraTempFrmPred->Label   (-text=>" temperature cut-off for RNAfold when calculating secondary structures of RNAs")->pack(-side=> 'left');
+
+	my $paraCutFrmPred = $paraFrmPred->Frame() -> pack(-fill => 'x');
+	$paraCutFrmPred->Label   (-text=>"Cut-off", -width => 25,-padx=>10)->pack(-side=> 'left');
+	$cutEntryPred = $paraCutFrmPred->Entry(-textvariable=>1, -width=>3,-justify=>'left') ->pack(-side => 'left');
+	$paraCutFrmPred->Label   (-text=>" minimum score cut-off for printing out the potential precursor sequences in miRDeep")->pack(-side=> 'left');
+
+	my $paraGearFrmPred = $paraFrmPred->Frame() -> pack(-fill => 'x');
+	$paraGearFrmPred->Label(-text=>"Gearing", -width => 25,-padx=>10)->pack(-side=> 'left');
+	$gearEntryPred = $paraGearFrmPred->Entry(-textvariable=>50000, -width=>5,-justify=>'left') ->pack(-side => 'left');
+	$paraGearFrmPred->Label(-text=>" maximum number of precursor for automatic excision gearing(-1,all precursors)")->pack(-side=> 'left');
+
+	my $paraRandFrmPred = $paraFrmPred->Frame() -> pack(-fill => 'x');
+	$paraRandFrmPred->Label   (-text=>"Randfold", -width => 25,-padx=>10)->pack(-side=> 'left');
+	$randEntryPred = $paraRandFrmPred->Entry(-textvariable=>1, -width=>3,-justify=>'left') ->pack(-side => 'left');
+	$paraRandFrmPred->Label   (-text=>" whether perform randfold analysis, set to 0 to disable")->pack(-side=> 'left');
+
+	my $paraModeFrmPred= $paraFrmPred->Frame() -> pack(-fill => 'x');
+	$paraModeFrmPred->Label   (-text=>"Mode", -width => 25,-padx=>10)->pack(-side=> 'left');
+	$modeEntryPred = $paraModeFrmPred->Entry(-textvariable=>1, -width=>3,-justify=>'left') ->pack(-side => 'left');
+	$paraModeFrmPred->Label   (-text=>" predicttion model, 1: animal; 2: monocot; 3 dicots.  default=1")->pack(-side=> 'left');
+
+	my $paraSpeciesFramPred = $paraFrmPred->Frame() -> pack(-fill => 'x');
+	$paraSpeciesFramPred->Label   (-text=>"Species", -width => 25,-padx=>10)->pack(-side=> 'left');
+	$modeEntryPred = $paraSpeciesFramPred->Entry(-textvariable=>"", -width=>7,-justify=>'left') ->pack(-side => 'left');
+	$paraSpeciesFramPred->Label   (-text=>"species being analyzed, optional")->pack(-side=> 'left');
+
+	# options for Bowtie
+	$paraFrmPred->Label(-text=>"        Options for Bowtie:",-anchor => 'w')->pack(-side=>'top',-expand => 1, -fill => 'x');
+
+	my $paraCpuFrmPred = $paraFrmPred->Frame() -> pack(-fill => 'x');
+	$paraCpuFrmPred->Label (-text=>"Multithreads:", -width => 25, -padx => 10)->pack(-side=> 'left');
+	$cpuEntryBwt = $paraCpuFrmPred->Entry( -textvariable=>1,-width=>3,-justify=>'left') ->pack(-side => 'left');
+	$paraCpuFrmPred->Label (-text=>" number of threads to use")->pack(-side=> 'left');
+
+	my $paraNFrmPred = $paraFrmPred->Frame() -> pack(-fill => 'x');
+	$paraNFrmPred->Label   (-text=>"Repeat hits:", -width => 25,-padx=>10)->pack(-side=> 'left');
+	$repEntryBwt = $paraNFrmPred->Entry(-textvariable=>5, -width=>3,-justify=>'left') ->pack(-side => 'left');
+	$paraNFrmPred->Label   (-text=>" maximum repeat hits allowed for a read")->pack(-side=> 'left');
+
+	$frmInited{"Filter"} = 0;
+	$frmInited{"Predict"} = 1;
+	$frmInited{"Homoseq"} = 0;
+}
+
+sub homoseqBtmCmd{
+	return(0)  if ($frmInited{"Homoseq"});
+	$frmInRunFrm->destroy if Tk::Exists($frmInRunFrm);
+	$frmInRunFrm = $runFrm->Frame()->pack(-fill => 'both',-expand => 1);
+	foreach my $key (qw/reads ref maf hp mature other chain/){
+		$frmInHomo{$key} = $frmInRunFrm->Frame()->pack(-fill => 'x');
+		$frmInHomo{$key}{"left"}  = $frmInHomo{$key}->Frame(-width => "150", -label => $entryInfoInHomo->{$key})
+			->pack(-side => 'left' );
+		$frmInHomo{$key}{"right"} = $frmInHomo{$key}->Frame()->pack(-side => 'left', -expand => 1,  -fill=> 'x');
+		$entryInHomo{$key} = $frmInHomo{$key}{"right"}->Entry(-textvariable=>\$entryValueInHomo->{$key},-width=>50, -justify=> 'left')
+			->pack(-side => 'left');
+
+		if($key eq 'maf'){
+			$frmInHomo{$key}{"right"}->Button(-text=>"Browse", 
+				-command => sub{
+					$entryValueInHomo->{$key}= $frmInHomo{$key}->getOpenFile(-filetypes=>$mafFileType,  -initialdir => $startdir);
+				} # end -command 
+				)->pack(-side => "left");
+		}elsif($key eq 'chain'){
+			$frmInHomo{$key}{"right"}->Button(-text=>"Browse", 
+				-command => sub{
+					$entryValueInHomo->{$key}= $frmInHomo{$key}->getOpenFile(-filetypes=>$chainFileType,  -initialdir => $startdir);
+				} # end -command 
+			)->pack(-side => "left");
+		}elsif($key eq 'hp'){
+			$frmInHomo{$key}{"right"}->Button(-text=>"Browse", 
+				-command => sub{
+						my $tmpFile = $frmInFilter{$key}->getOpenFile( -filetypes=>$bwtFileType, -initialdir => $startdir);
+						if (defined($tmpFile)){
+							$tmpFile =~ s/\.fa$//;
+							$tmpFile =~ s/\.fas$//;
+							$tmpFile =~ s/\.fasta$//;
+							$tmpFile =~ s/(.rev)?.\d.ebwt//;
+							$entryValueInHomo->{$key}= $tmpFile;
+						}
+				}
+			)->pack(-side => "left");
+		}else{
+			$frmInHomo{$key}{"right"}->Button(-text=>"Browse", 
+				-command => sub{
+					$entryValueInHomo->{$key}= $frmInHomo{$key}->getOpenFile(-filetypes=>$fastaFileType,  -initialdir => $startdir);
+				} # end -command 
+				)->pack(-side => "left");
+		}
+	}
+
+	my $runFrmHomo= $frmInRunFrm->Frame()->pack(-fill => 'x');
+	my $runBtmHomo = $runFrmHomo->Button(-text => 'Run',-command => \&runCmdHomo
+				   )->pack(-side => "right" );
+	$showBtmHomo = $runFrmHomo ->Button(-text => 'Display Result',-state=> "normal", -command => \&displayHomoTop
+					   )->pack(-side => "right" );
+	my $resetBtmHomo = $runFrmHomo->Button(-text => 'Reset', -command => \&resetInputHomo
+				)->pack(-side => "right" );
+
+	my $paraFrmHomo= $frmInRunFrm->Frame()->pack(-fill => 'x');
+	$paraFrmHomo->Label(-text=>"    Parameters:",-anchor=>'w')->pack( -side=>'top',-expand => 1, -fill => 'x');
+	# Options for homolog searching
+	$paraFrmHomo->Label(-text=>"        Options for homolog searching:",-anchor => 'w')->pack(-side=>'top',-expand => 1, -fill => 'x');
+	my $paraTempFrmHomo = $paraFrmHomo->Frame() -> pack(-fill => 'x');
+	$paraTempFrmHomo->Label   (-text=>"Temperature", -width => 25,-padx=>10)->pack(-side=> 'left');
+	$tempEntryHomo = $paraTempFrmHomo->Entry(-textvariable=>22, -width=>3,-justify=>'left') ->pack(-side => 'left');
+	$paraTempFrmHomo->Label   (-text=>" temperature cut-off for RNAfold when calculating secondary structures of RNAs")->pack(-side=> 'left');
+
+	# options for Bowtie
+	$paraFrmHomo->Label(-text=>"        Options for Bowtie:",-anchor => 'w')->pack(-side=>'top',-expand => 1, -fill => 'x');
+
+	my $paraCpuFrmHomo = $paraFrmHomo->Frame() -> pack(-fill => 'x');
+	$paraCpuFrmHomo->Label (-text=>"Multithreads:", -width => 25, -padx => 10)->pack(-side=> 'left');
+	$cpuEntryBwt = $paraCpuFrmHomo->Entry( -textvariable=>1,-width=>3,-justify=>'left') ->pack(-side => 'left');
+	$paraCpuFrmHomo->Label (-text=>" number of threads to use")->pack(-side=> 'left');
+
+
+	$frmInited{"Filter"} = 0;
+	$frmInited{"Predict"} = 0;
+	$frmInited{"Homoseq"} = 1;
+	$showBtmHomo->configure(-state=> "normal"); # Change the text	
+}
+
+sub displayHomoTop{
+	my @resultFiles=("$projDir/predict.mirna.fas", 
+			   "$projDir/predict.mirna.bwt",
+			   "$projDir/homoseq.mirna.bwt",
+			   "$projDir/homoseq.slim.clustalw",
+			   "$projDir/homoseq.cand.slim.gff"
+		   );
+	for(2..4){
+		if ( ! -s $resultFiles[$_]) {
+			my $answer = $mw->Dialog(-title => 'Error', 
+					-text => " $resultFiles[$_] hvae not been generated,\n please check whether the project had been run properly.",
+					-default_button => 'Yes', -buttons => [ 'Yes', 'No'], 
+					-bitmap => 'question' 
+				)->Show( );
+			if ($answer eq 'No') {
+				$mw->destroy;
+			}
+			if ($answer eq 'Yes') {
+				return;
+			}
+		}
+	}
+
+	my $displayTop = $mainFrame-> Toplevel(-title=>"miREvo"); #Make the window
+	$displayTop->geometry("750x400");
+	#Put things in it
+
+	my $topFrmInMap = $displayTop->Frame->packAdjust(-fill => 'both',-expand => 1 );
+
+	my $labMap = $topFrmInMap -> Label(-text=>"Choose a miRNA ID to display: ", )->pack(-side=>"left");
+
+
+	my $alignFrmInMap = $displayTop->Frame->packAdjust(-fill => 'both',-expand => 1  );
+	my $leftFrm = $alignFrmInMap->Frame()->packAdjust(-side=>'left', -fill => 'both',-expand => 1);
+	my $middFrm = $alignFrmInMap->Frame()->packAdjust(-side=>'left', -fill => 'both',-expand => 1);
+	my $rightFrm = $alignFrmInMap->Frame()->pack(-side=>'left', -fill => 'both',-expand => 1);
+
+	my $mirnaAccList = $leftFrm->Scrolled('Listbox', -listvariable=>\@mirnaAcc, -scrollbars=>'osoe')->pack(-side=>'left',-fill=>'both',-expand=>1);
+	my $lbID = $middFrm->ROText(-wrap => 'none',-width => 20);
+	my $lbSeq = $rightFrm->ROText(-wrap => 'none');
+
+
+	# Create the vertical Scrollbar
+	my $scrollbarY = $rightFrm->Scrollbar();
+	my $btnFrmInMap = $displayTop->Frame->pack(-fill => 'both',-expand => 1);
+	my $imageCanvar = $btnFrmInMap->Canvas(-height=>460, -width=>550,-background=>'white')->packAdjust(-side=>'left', -fill => 'both',-expand => 1);
+
+	# Create the vertical Scrollbar
+	my $scrollBarTop = $btnFrmInMap->Scrollbar();
+	my $textTop = $btnFrmInMap->ROText(-wrap => 'none',-yscrollcommand => ['set',$scrollBarTop], -height => 10);
+	#Configure the Scrollbar to talk to the Listbox widget
+	$scrollBarTop->configure(-command => ['yview' => $textTop]);
+	#Pack the Scrollbar first so that it doesn't disappear when we resize
+	$scrollBarTop->pack(-side => 'right', -fill => 'y');
+	$textTop->pack(-expand => 1, -side => 'left', -fill => 'both');
+
+	tie *STDOUT, ref $textTop, $textTop;
+
+	if( -s "$projDir/predict.statistic" ){
+		open(STAT2,"$projDir/predict.statistic") || print "Warning: can not open $projDir/predict.statistic: $!\n";
+		print $_ while(<STAT2>);
+		close STAT2;
+	}
+
+	if( -s "$projDir/filter.statistic" ){
+		open(STAT2,"$projDir/filter.statistic") || print "Warning: can not open $projDir/filter.statistic: $!\n";
+		print $_ while(<STAT2>);
+		close STAT2;
+	}
+
+	if( -s "$projDir/homoseq.statistic" ){
+		open(STAT1,"$projDir/homoseq.statistic")|| print "warning: can not open $projDir/homoseq.statistic: $!\n";
+		print $_ while(<STAT1>);
+		close STAT1;
+	}
+
+	#--------------------------------------------------
+	# untie(*STDOUT);
+	#-------------------------------------------------- 
+
+
+	&loadResultHomo();
+
+	foreach my $acc (@mirnaAcc){
+		my $pngfile = $pngFileName->{$acc};
+		if( -s $pngfile){
+			$pngImages->{$acc} = $imageCanvar->Photo(-format=>'png',-file=>"$pngfile");
+		}
+	}
+
+	$mirnaAccList->bind('<ButtonRelease-1>', sub{displayAcc($mirnaAccList,$lbID,$lbSeq,$imageCanvar)} );
+	$mirnaAccList->bind('<KeyRelease-Up>',   sub{displayAcc($mirnaAccList,$lbID,$lbSeq,$imageCanvar)} );
+	$mirnaAccList->bind('<KeyRelease-Down>', sub{displayAcc($mirnaAccList,$lbID,$lbSeq,$imageCanvar)} );
+
+	# Create the horizontal Scrollbar
+	my $listboxXScrolLeft = $leftFrm->Scrollbar(-orient => 'horizontal');
+	my $listboxXScrolMidd = $middFrm->Scrollbar(-orient => 'horizontal');
+	my $listboxXScrolRight= $rightFrm->Scrollbar(-orient => 'horizontal');
+
+	my $xScroll=[$listboxXScrolMidd, $listboxXScrolRight];
+	my $widgets=[$lbID, $lbSeq];
+	for my $i (0,1)
+	{
+		#Configure the Scrollbar to talk to the Listbox widget
+		@$xScroll[$i]->configure(-command => ['xview' => @$widgets[$i]]);
+		# #Pack the Scrollbar first so that it doesn't disappear when we resize
+		@$xScroll[$i]->pack(-side=>'bottom',-fill => 'x');
+		#Configure the widget to talk to the Scrollbar
+		@$widgets[$i]->configure(-xscrollcommand => ['set',@$xScroll[$i]]);
+	}
+
+	# This method is called when one Listbox is scrolled with the keyboard
+	# # It makes the Scrollbar reflect the change, and scrolls the other lists
+	sub scroll_all_homo {
+		my ($sb, $scrolled, $lbs, @args) = @_;
+		$sb->set(@args); # tell the Scrollbar what to display
+		my ($top, $bottom) = $scrolled->yview( );
+		foreach my $w (@$lbs) {
+			$w ->yviewMoveto($top); # adjust each lb
+		}
+	}
+
+	# Configure each widget to call &scroll_all_homo
+	foreach my $w (@$widgets) {
+		$w->configure(-yscrollcommand => [ \&scroll_all_homo, $scrollbarY, $w, $widgets]);
+	}
+
+	# Configure the Scrollbar to scroll each Listbox
+	$scrollbarY->configure(-command => sub { foreach my $w (@$widgets) { $w->yview(@_); }});
+
+	$lbID->pack(-fill=>'both',-side=>'left',-expand=>1);
+	$scrollbarY->pack(-fill=>'y',-side=>'right');
+	$lbSeq->pack(-fill=>'both',-side=>'right',-expand=>1);
+
+
+	#An option to close the window.
+	my $btmClose = $displayTop -> Button(-text=>"Close", 
+		-command => sub { $imageCanvar->delete(); destroy $displayTop; } ) -> pack(-side=>'bottom');
+}
+
+sub displayPredTop{
+	my @resultFiles=("$projDir/predict.mirna.fas", 
+				     "$projDir/predict.mirna.bwt",
+					 "$projDir/display.mirna.fas.cleaned",
+				     "$projDir/display.mirna.bwt");
+   my $missfile;
+   my $ok;
+	if ( (! -s $resultFiles[0]) || ( ! -s $resultFiles[1] ) ) { 
+		(-s $resultFiles[0]) ? $missfile= $resultFiles[1] : $missfile = $resultFiles[0];
+		if( ! (-s $resultFiles[2] && -s $resultFiles[3]) ) {
+			$ok = 'FALSE';
+		}else{
+			$ok = 'TRUE';
+		}
+	}else{
+		$ok = 'TRUE';
+		$missfile = ' ';
+	}
+	if ( $ok eq 'FALSE' && defined($missfile) ){
+		my $answer = $mw->Dialog(-title => 'Error', 
+				-text => " $missfile hvae not been generated,\n please check whether the project had been run properly.",
+				-default_button => 'Yes', -buttons => [ 'Yes', 'No'], 
+				-bitmap => 'question' 
+			)->Show();
+		if ($answer eq 'No') {
+			$mw->destroy;
+		}
+		if ($answer eq 'Yes') {
+			return;
+		}
+	}
+
+	my $displayTop = $mainFrame-> Toplevel(-title=>"miREvo"); #Make the window
+	$displayTop->geometry("750x800");
+	#Put things in it
+
+	my $topFrmInMap = $displayTop->Frame->packAdjust(-fill => 'both',-expand => 1  );
+
+	my $labMap = $topFrmInMap -> Label(-text=>"Choose a miRNA ID a miRNA to display: ",
+			)->pack(-side=>"left");
+
+
+	my $alignFrmInMap = $displayTop->Frame->packAdjust(-fill => 'both',-expand => 1  );
+	my $leftFrm = $alignFrmInMap->Frame()->packAdjust(-side=>'left', -fill => 'both',-expand => 1);
+	my $middFrm = $alignFrmInMap->Frame()->packAdjust(-side=>'left', -fill => 'both',-expand => 1);
+	my $rightFrm = $alignFrmInMap->Frame()->pack(-side=>'left', -fill => 'both',-expand => 1);
+	my $mirnaAccList = $leftFrm->Scrolled('Listbox', -listvariable=>\@mirnaAcc, -scrollbars=>'osoe')->pack(-side=>'left',-fill=>'both',-expand=>1);
+	my $lbID = $middFrm->ROText(-wrap => 'none',-width => 20);
+	my $lbSeq = $rightFrm->ROText(-wrap => 'none');
+
+
+	# Create the vertical Scrollbar
+	my $scrollbarY = $rightFrm->Scrollbar();
+	my $btnFrmInMap = $displayTop->Frame->pack(-fill => 'both',-expand => 1);
+
+	my $imageCanvar = $btnFrmInMap->Canvas(-height=>460, -width=>550,-background=>'white')->packAdjust(-side=>'left', -fill => 'both',-expand => 1);
+
+	# Create the vertical Scrollbar
+	my $scrollBarTop = $btnFrmInMap->Scrollbar();
+	my $textTop = $btnFrmInMap->ROText(-wrap => 'none',-yscrollcommand => ['set',$scrollBarTop], -height => 10);
+	#Configure the Scrollbar to talk to the Listbox widget
+	$scrollBarTop->configure(-command => ['yview' => $textTop]);
+	#Pack the Scrollbar first so that it doesn't disappear when we resize
+	$scrollBarTop->pack(-side => 'right', -fill => 'y');
+	$textTop->pack(-expand => 1, -side => 'left', -fill => 'both');
+
+	tie *STDOUT, ref $textTop, $textTop;
+
+	if( -s "$projDir/predict.statistic" ){
+		open(STAT2,"$projDir/predict.statistic")|| print "Warning: can not open $projDir/predict.statistic: $!\n";
+		print $_ while(<STAT2>);
+		close STAT2;
+	}
+
+	if( -s "$projDir/filter.statistic" ){
+		open(STAT1,"$projDir/filter.statistic")|| print "warning: can not open $projDir/filter.statistic: $!\n";
+		print $_ while(<STAT1>);
+		close STAT1;
+		print "\n";
+	}
+
+	if( -s "$projDir/display.statistic" ){
+		open(STAT2,"$projDir/display.statistic")|| print "Warning: can not open $projDir/display.statistic: $!\n";
+		print $_ while(<STAT2>);
+		close STAT2;
+	}
+
+	#--------------------------------------------------
+	# untie(*STDOUT);
+	#-------------------------------------------------- 
+
+	&loadResultPred();
+
+	foreach my $acc (@mirnaAcc){
+		my $pngfile = $pngFileName->{$acc};
+		if( -s $pngfile){
+			$pngImages->{$acc} = $imageCanvar->Photo(-format=>'png',-file=>"$pngfile");
+		}
+	}
+
+	$mirnaAccList->bind('<ButtonRelease-1>', sub{displayAcc($mirnaAccList,$lbID,$lbSeq,$imageCanvar)} );
+	$mirnaAccList->bind('<KeyRelease-Up>',   sub{displayAcc($mirnaAccList,$lbID,$lbSeq,$imageCanvar)} );
+	$mirnaAccList->bind('<KeyRelease-Down>', sub{displayAcc($mirnaAccList,$lbID,$lbSeq,$imageCanvar)} );
+	
+	# Create the horizontal Scrollbar
+	my $listboxXScrolLeft = $leftFrm->Scrollbar(-orient => 'horizontal');
+	my $listboxXScrolMidd = $middFrm->Scrollbar(-orient => 'horizontal');
+	my $listboxXScrolRight= $rightFrm->Scrollbar(-orient => 'horizontal');
+
+	my $xScroll=[$listboxXScrolMidd, $listboxXScrolRight];
+	my $widgets=[$lbID, $lbSeq];
+	for my $i (0,1)
+	{
+		#Configure the Scrollbar to talk to the Listbox widget
+		@$xScroll[$i]->configure(-command => ['xview' => @$widgets[$i]]);
+		# #Pack the Scrollbar first so that it doesn't disappear when we resize
+		@$xScroll[$i]->pack(-side=>'bottom',-fill => 'x');
+		#Configure the widget to talk to the Scrollbar
+		@$widgets[$i]->configure(-xscrollcommand => ['set',@$xScroll[$i]]);
+	}
+
+	# This method is called when one Listbox is scrolled with the keyboard
+	# # It makes the Scrollbar reflect the change, and scrolls the other lists
+	sub scroll_all_pred {
+		my ($sb, $scrolled, $lbs, @args) = @_;
+		$sb->set(@args); # tell the Scrollbar what to display
+		my ($top, $bottom) = $scrolled->yview( );
+		foreach my $w (@$lbs) {
+			$w ->yviewMoveto($top); # adjust each lb
+		}
+	}
+
+	# Configure each widget to call &scroll_all_pred
+	foreach my $w (@$widgets) {
+		$w->configure(-yscrollcommand => [ \&scroll_all_pred, $scrollbarY, $w, $widgets]);
+	}
+
+	# Configure the Scrollbar to scroll each Listbox
+	$scrollbarY->configure(-command => sub { foreach my $w (@$widgets) { $w->yview(@_); }});
+
+	$lbID->pack(-fill=>'both',-side=>'left',-expand=>1);
+	$scrollbarY->pack(-fill=>'y',-side=>'right');
+	$lbSeq->pack(-fill=>'both',-side=>'right',-expand=>1);
+
+
+	#An option to close the window.
+	my $btmClose = $displayTop -> Button(-text=>"Close", 
+		-command => sub { $imageCanvar->delete(); destroy $displayTop; } ) -> pack(-side=>'bottom');
+}
+
+#--------------------------------------------------
+# foreach my $eachAcc (@mirnaAcc){
+# 	print $eachAcc;
+# 	print Dumper($mirnaSeq->{$eachAcc});
+# 	print Dumper($mirnaSst->{$eachAcc});
+# 	print Dumper($homoSeqInfo->{$eachAcc}->{"ID"});
+# 	print Dumper($homoSeqInfo->{$eachAcc}->{"Seq"});
+# 	print Dumper($seedAlignSeq->{$eachAcc});
+# 	print Dumper($homoSeqStructInfo->{$eachAcc}->{"ID"});
+# 	print Dumper($homoSeqStructInfo->{$eachAcc}->{"Seq"});
+# 	print Dumper($readsInfo->{$eachAcc});
+# }
+#-------------------------------------------------- 
+
+sub loadResultHomo{
+	use MyMod::Bio::Tools::miRNA;
+	use Bio::SeqIO;
+
+	@mirnaAcc = ();
+ 	$mirnaSeq = ();
+ 	$mirnaSst = ();
+ 	$mirbaseAnno = ();
+	$posInfo = ();	
+ 	$homoSeqInfo = ();
+ 	$seedAlignSeq = ();
+ 	$homoSeqStructInfo = ();
+ 	$readsInfo = ();
+	my %alnSeqInfo = ();
+
+	my @files=("$projDir/homoseq.mirna.fas",
+			   "$projDir/homoseq.mirna.bwt",
+			   "$projDir/homoseq.slim.clustalw",
+			   "$projDir/homoseq.cand.slim.gff",
+			   "$projDir/homoseq.mirna.map"
+		   );
+
+	my $seqana=MyMod::Bio::Tools::SeqAna->new();
+	my $mirna_fact=MyMod::Bio::Tools::miRNA->new();
+
+	my $seqin=Bio::SeqIO->new(-file=>$files[0],-format=>"fasta", -verbose=>-1);
+	my $prjname;
+	while(my $seq=$seqin->next_seq()){
+		my ($tmp_acc,$index,$mature,$grade)=split(/_/,$seq->display_id());
+		my $acc;
+		$prjname=$tmp_acc;
+		if (defined($grade)){
+			$acc = $tmp_acc.'_'.$index."_".$grade;
+		}else{
+			$acc = $tmp_acc.'_'.$index;
+		}
+		$seed->{$acc} = substr $mature,1,7;
+		push @mirnaAcc,$acc;
+		$mirnaSeq->{$acc} = $seq->seq();
+		$pngFileName->{$acc} = $projDir."/homo_image/".$seq->display_id."_ss_new.png";
+		$matureSeq->{$acc} = $mature;
+	}
+	if(-s $files[4]){
+		open(CSV,$files[4])|| print "can not open: $!\n";
+		my $acc;
+		while( my $line = <CSV>){
+			if($line =~ />/){
+				chomp $line;
+				$line =~ s/>//;
+				$acc = $line;
+			}elsif($line =~ /seed/){
+				chomp $line;
+				my @arr = split(/\:/, $line);
+				$mirbaseAnno->{$acc}{seed} = $arr[1];
+			}elsif($line =~ /identity/){
+				chomp $line;
+				my @arr = split(/\:/, $line);
+				$mirbaseAnno->{$acc}{mature} = $arr[1];
+			}
+		}
+		close CSV;
+	}
+
+	@mirnaAcc = sort {$a cmp $b} @mirnaAcc;
+
+	my $pos_file = $files[3];
+	open(POS,$pos_file)|| print "Warning: can not open $pos_file: $!\n";
+	while(my $line=<POS>){
+		chomp $line;
+		my @ary=split(/\t/,$line);
+		#chrX    maf     mirna   4821162 4821266 .       -       .       dme_4_447.5
+		my $tmpPos = join(":",$ary[0],$ary[3],$ary[4],$ary[6]);
+		if (defined $posInfo->{$ary[8]}){
+			push(@{$posInfo->{$ary[8]}}, $tmpPos);
+		}else{
+			$posInfo->{$ary[8]} = ();
+			push(@{$posInfo->{$ary[8]}}, $tmpPos);
+		}
+	}
+	
+
+	my $align_file=$files[2];
+	#read tags information
+	my $mapping_result=$files[1]; #soap mapping results
+	my $tags_info;
+	open(TAG,$mapping_result)|| print "Warning: can not open $mapping_result: $!\n";
+	my $total_libs;
+	while(my $line=<TAG>){
+		chomp($line);
+		my @ary=split(/\t/,$line);
+		my ($lib,$mir,$copy)=split(/_/,$ary[0]);
+		$copy =~ s/x//;
+		my $elem={"copy"=>$copy,"seq"=>$ary[4],"lib"=>$lib,"strand"=>$ary[1]};
+		my ($lib2,$index,$seq,$score)=split(/_/,$ary[2]);
+		my $acc = $lib2."_".$index."_".$score;
+		push(@{$tags_info->{$acc}},$elem);
+		$total_libs->{$lib}=1;
+	}
+	my $acc;
+	my @all_libs=sort(keys(%$total_libs));
+	my $alnin=Bio::AlignIO->new(-file=>$align_file,-format=>"clustalw",-verbose => -1);
+	while(my $aln=$alnin->next_aln()){	
+		my @seqs=$aln->each_seq();
+
+		$acc = &getAcc($seqs[0]->display_id());
+		my ($sst_aln)=$mirna_fact->get_sst_aln($aln,1);
+
+		foreach my $seq(@seqs){
+			my @tmpArr = split(/_/, $seq->display_id());
+		}
+
+		# get homology sequence alignment
+		foreach my $seq(@seqs){
+			my (undef,undef,undef,$taxon)=split(/_/,$seq->display_id);
+			$alnSeqInfo{$seq->display_id()} = $seq;
+			if(defined($homoSeqInfo->{$acc}->{"Seq"})){
+				 push( @{$homoSeqInfo->{$acc}->{"Seq"}}, uc($seq->seq()));
+				 push( @{$homoSeqInfo->{$acc}->{"ID"}}, $taxon);
+			}else{
+				 $homoSeqInfo->{$acc}->{"Seq"} = ();
+				 $homoSeqInfo->{$acc}->{"ID"} = ();
+				 push( @{$homoSeqInfo->{$acc}->{"Seq"}}, uc($seq->seq()));
+				 push( @{$homoSeqInfo->{$acc}->{"ID"}}, $taxon);
+			}
+			my ($sst_seq)=$sst_aln->{$seq->display_id()};
+			if(defined($homoSeqStructInfo->{$acc}->{"Seq"})){
+				 push( @{$homoSeqStructInfo->{$acc}->{"Seq"}}, $sst_seq);
+				 push( @{$homoSeqStructInfo->{$acc}->{"ID"}}, $taxon);
+			}else{
+				 $homoSeqStructInfo->{$acc}->{"Seq"} = ();
+				 $homoSeqStructInfo->{$acc}->{"ID"} = ();
+				 push( @{$homoSeqStructInfo->{$acc}->{"Seq"}}, $sst_seq);
+				 push( @{$homoSeqStructInfo->{$acc}->{"ID"}}, $taxon);
+			}
+		}
+
+	} # end read aln infor
+
+	#--------------------------------------------------
+	# print Dumper($mirnaAlignSeq);
+	#-------------------------------------------------- 
+
+	foreach $acc (keys %{$mirnaSeq}){
+		my @all_tags;
+		my ($alignSeq, $alignTaxon) = &locateSeqHomo($acc, $mirnaSeq->{$acc});
+		$mirnaAlignSeq->{$acc} = $alignSeq;
+		if( $mirnaAlignSeq->{$acc} eq " " ){
+			$mirnaAlignSeq->{$acc} = $mirnaSeq->{$acc}
+		}
+			my $hit_acc=$acc."_".$alignTaxon;
+			if (defined($tags_info->{$acc})){
+				my @tags=@{$tags_info->{$acc}};
+				#combined tags
+				my $all_copy;
+				foreach my $tmptag (@tags){
+					$all_copy->{$tmptag->{"seq"}."_".$tmptag->{"strand"}}->{$tmptag->{"lib"}}=$tmptag->{"copy"};
+				}
+				my @new_tags;
+				foreach my $tmpseqid(keys %{$all_copy}){
+					my ($tmptag,$tmpstrand)=split(/_/,$tmpseqid);
+					my @lib_copys;
+					foreach my $lib(@all_libs){
+						my $tmpcopy=0;
+						$tmpcopy=$all_copy->{$tmpseqid}->{$lib} if defined($all_copy->{$tmpseqid}->{$lib});
+						push(@lib_copys,$tmpcopy);
+					}
+					my $new_copy=join("\t",@lib_copys);
+					push(@new_tags,{"lib"=>"","copy"=>$new_copy,"seq"=>$tmptag,"strand"=>$tmpstrand});
+				}
+
+				my $tmpseq;
+				if(defined($alnSeqInfo{$hit_acc})){
+					$tmpseq=$alnSeqInfo{$hit_acc};
+				}else{
+					$tmpseq=Bio::LocatableSeq->new(
+						-display_id=>"tag",
+						-seq=>uc($mirnaSeq->{$acc}),
+						-start=>1,
+						-end=>length($mirnaSeq->{$acc}),
+						-verbose=>-1,
+						-strand=>1
+					);
+				}
+				$tmpseq->seq(uc($tmpseq->seq()));
+				my @tmp_all_tags;
+				foreach my $elem(@new_tags){
+					my $tmptag=Bio::LocatableSeq->new(
+						-display_id=>"tag",
+						-seq=>uc($elem->{"seq"}),
+						-start=>1,
+						-end=>length($elem->{"seq"}),
+						-verbose=>-1,
+						-strand=>1
+						);
+					my $tag_rc = reverse $elem->{"seq"};
+					$tag_rc =~ tr/ACGTacgt/TGCAtgca/;
+					my $tmptag_rc=Bio::LocatableSeq->new(
+						-display_id=>"tag",
+						-seq=>uc($tag_rc),
+						-start=>1,
+						-end=>length($tag_rc),
+						-strand=>1
+					);
+
+					my ($aln_seq,$tagstart);
+					($aln_seq,$tagstart)=$seqana->aln_identity_seq($tmpseq,$tmptag);
+					if(! defined ($aln_seq)){
+						($aln_seq,$tagstart)=$seqana->aln_identity_seq($tmpseq,$tmptag_rc);
+					}
+
+					next if !defined($aln_seq);
+					my $aln_seq_str=$aln_seq->seq();
+					$aln_seq_str=~ s/T/U/sg;
+					$aln_seq_str=lc($aln_seq_str) if $elem->{"strand"} eq "-";
+					my $tag_line=$aln_seq_str." ".$elem->{"lib"}." ".$elem->{"copy"}." ".$elem->{"strand"}."\n";
+					push(@tmp_all_tags,{"tag"=>$tag_line,"pos"=>$tagstart});
+				}
+				my @sort_tags=sort{$a->{"pos"}<=>$b->{"pos"}}@tmp_all_tags;
+				grep{push(@all_tags,$_)}@sort_tags;
+			}
+		#}
+
+		$readsInfo->{$acc}=();
+		if( $#all_tags >= 0){
+			foreach my $ref( @all_tags ){
+				push (@{$readsInfo->{$acc}}, $ref->{"tag"});
+			}
+		}else{
+			push (@{$readsInfo->{$acc}}, "No reads mapped to this miRNA.\n" );
+		}
+
+		my $aln=Bio::SimpleAlign->new();
+		my $tmplocseq=Bio::LocatableSeq->new(
+			-display_id=>$acc,
+			-seq=>$mirnaAlignSeq->{$acc},
+			-start=>1,
+			-end=>length $mirnaAlignSeq->{$acc}
+		);
+		$aln->add_seq($tmplocseq);
+		my ($sst_aln)=$mirna_fact->get_sst_aln($aln,1);
+		my $tmpseq=$sst_aln->{$acc};
+		next if !defined($tmpseq);
+		$mirnaSst->{$acc} = $tmpseq;
+
+		my $mirna_seq_len = length($mirnaAlignSeq->{$acc});
+		my $mirna_seq=Bio::LocatableSeq->new(
+			-display_id=>"mirna",
+			-seq=>uc($mirnaAlignSeq->{$acc}),
+			-start=>1,
+			-end=>$mirna_seq_len,
+			-verbose=>-1,
+			-strand=>1
+		);
+		my $tmpmat=Bio::LocatableSeq->new(
+			-display_id=>"seed",
+			-seq=>uc($matureSeq->{$acc}),
+			-start=>1,
+			-end=>length($matureSeq->{$acc}),
+			-verbose=>-1,
+			-strand=>1
+		);
+		my $mat_rc = reverse $matureSeq->{$acc};
+		$mat_rc =~ tr/ACGTacgt/TGCAtgca/;
+		my $tmpmat_rc=Bio::LocatableSeq->new(
+			-display_id=>"seed",
+			-seq=>uc($mat_rc),
+			-start=>1,
+			-end=>length($mat_rc),
+			-verbose=>-1,
+			-strand=>1
+		);
+		my $tmpseed=Bio::LocatableSeq->new(
+			-display_id=>"seed",
+			-seq=>uc($seed->{$acc}),
+			-start=>1,
+			-end=>length($seed->{$acc}),
+			-verbose=>-1,
+			-strand=>1
+		);
+		my $seed_rc = reverse $seed->{$acc};
+		$seed_rc =~ tr/ACGTacgt/TGCAtgca/;
+		my $tmpseed_rc=Bio::LocatableSeq->new(
+			-display_id=>"seed",
+			-seq=>uc($seed_rc),
+			-start=>1,
+			-end=>length($seed->{$acc}),
+			-verbose=>-1,
+			-strand=>1
+		);
+
+		my ($seed_aln_seq,$mat_aln_seq,$tagstart);
+		($mat_aln_seq,$tagstart)=$seqana->aln_identity_seq($mirna_seq,$tmpmat);
+		if (! defined($mat_aln_seq)){
+			($mat_aln_seq,$tagstart)=$seqana->aln_identity_seq($mirna_seq,$tmpmat_rc);
+		}
+		if(defined($mat_aln_seq)){
+			$matureAlignSeq->{$acc} = $mat_aln_seq->seq();
+			($seed_aln_seq,$tagstart)=$seqana->aln_identity_seq($mat_aln_seq,$tmpseed);
+			if (! defined($seed_aln_seq)){
+				($seed_aln_seq,$tagstart)=$seqana->aln_identity_seq($mat_aln_seq,$tmpseed_rc);
+			}
+			if (defined($seed_aln_seq)){
+				my $aln_seq_str=$seed_aln_seq->seq();
+				$aln_seq_str=~ s/T/U/sg;
+				$seedAlignSeq->{$acc}= $aln_seq_str;
+			}else{
+				$seedAlignSeq->{$acc}= "Seed can not be located: $seed->{$acc}"
+			}
+		}else{
+			($seed_aln_seq,$tagstart)=$seqana->aln_identity_seq($mirna_seq,$tmpseed);
+			if (! defined($seed_aln_seq)){
+				($seed_aln_seq,$tagstart)=$seqana->aln_identity_seq($mirna_seq,$tmpseed_rc);
+			}
+			if (defined($seed_aln_seq)){
+				my $aln_seq_str=$seed_aln_seq->seq();
+				$aln_seq_str=~ s/T/U/sg;
+				$seedAlignSeq->{$acc}= $aln_seq_str;
+			}else{
+				$seedAlignSeq->{$acc}= "Seed can not be located: $seed->{$acc}"
+			}
+		}
+	}
+}
+sub loadResultPred{
+	use MyMod::Bio::Tools::miRNA;
+	use Bio::SeqIO;
+
+	@mirnaAcc = ();
+ 	$mirnaSeq = ();
+ 	$mirnaSst = ();
+	$posInfo = ();	
+ 	$mirbaseAnno = ();
+ 	$homoSeqInfo = ();
+ 	$seedAlignSeq = ();
+ 	$homoSeqStructInfo = ();
+ 	$readsInfo = ();
+	my @files=("$projDir/predict.mirna.fas", "$projDir/predict.mirna.bwt", "$projDir/predict.mirna.map", "$projDir/predict.mirna.pos");
+
+	my $pos_file = $files[3];
+	open(POS,$pos_file)|| print "Warning: can not open $pos_file: $!\n";
+	while(my $line=<POS>){
+		chomp $line;
+		my @ary=split(/\t/,$line);
+		my @idinfo = split(/_/, $ary[0]);
+		my $id = join("_", $idinfo[0],$idinfo[1], $idinfo[3]);
+		my $tmpPos = $ary[1];
+		if (defined $posInfo->{$id}){
+			push(@{$posInfo->{$id}}, $tmpPos);
+		}else{
+			$posInfo->{$id} = ();
+			push(@{$posInfo->{$id}}, $tmpPos);
+		}
+	}
+
+	my $seqana=MyMod::Bio::Tools::SeqAna->new();
+	my $mirna_fact=MyMod::Bio::Tools::miRNA->new();
+	my $prjname;
+	my $seqin=Bio::SeqIO->new(-file=>$files[0],-format=>"fasta", -verbose=>1);
+	while(my $seq=$seqin->next_seq()){
+		my ($tmp_acc,$index,$mature,$grade)=split(/_/,$seq->display_id());
+		my $acc;
+		$prjname = $tmp_acc;
+		if( defined($grade)){
+			$acc = $tmp_acc.'_'.$index."_".$grade;
+		}else{
+			$acc = $tmp_acc.'_'.$index;
+		}
+		$seed->{$acc} = substr $mature,1,7;
+		push @mirnaAcc,$acc;
+		$mirnaSeq->{$acc} = $seq->seq();
+		$pngFileName->{$acc} = $projDir."/image/".$tmp_acc."_".$index."_";
+		my $tmpBaseLen = 12 - length($tmp_acc."_".$index."_");
+		if ($tmpBaseLen>0){
+			my $tmpBase = substr($mature,0,$tmpBaseLen);
+			$pngFileName->{$acc} = $pngFileName->{$acc}.$tmpBase."_ss_new.png";
+		}else{
+			if ( $index > 9 ) {
+				$pngFileName->{$acc} = $pngFileName->{$acc}."ss_new.png";
+			}else{
+				$pngFileName->{$acc} = $pngFileName->{$acc}."_ss_new.png";
+			}
+		}
+
+		$matureSeq->{$acc} = $mature;
+	}
+
+	if(-s $files[2]){
+		open(CSV,$files[2])|| print "can not open: $!\n";
+		my $acc;
+		while( my $line = <CSV>){
+			if($line =~ />/){
+				chomp $line;
+				$line =~ s/>//;
+				my @idinfo = split(/_/, $line);
+				$acc = join("_", $idinfo[0],$idinfo[1], $idinfo[3]);
+			}elsif($line =~ /seed/){
+				chomp $line;
+				my @arr = split(/\:/, $line);
+				$mirbaseAnno->{$acc}{seed} = $arr[1];
+			}elsif($line =~ /identity/){
+				chomp $line;
+				my @arr = split(/\:/, $line);
+				$mirbaseAnno->{$acc}{mature} = $arr[1];
+			}
+		}
+		close CSV;
+	}
+
+	my $mapping_result=$files[1];
+	my $tags_info;
+	open(TAG,$mapping_result)|| print "can not open: $!\n";
+	my $total_libs;
+	while(my $line=<TAG>){
+		chomp($line);
+		my @ary=split(/\t/,$line);
+		my ($lib,$mir,$copy)=split(/_/,$ary[0]);
+		$copy =~ s/x//;
+		my $elem={"copy"=>$copy,"seq"=>$ary[4],"lib"=>$lib,"strand"=>$ary[1]};
+		my ($tmp_acc,$index,$mature,$grade)=split(/_/,$ary[2]);
+
+		my $acc;
+		if( defined($grade)){
+			$acc = $tmp_acc.'_'.$index."_".$grade;
+		}else{
+			$acc = $tmp_acc.'_'.$index;
+		}
+
+		push(@{$tags_info->{$acc}},$elem);
+		$total_libs->{$lib}=1;
+	}
+	my @all_libs=sort(keys(%$total_libs));
+	$seqin=Bio::SeqIO->new(-file=>$files[0],-format=>"fasta");
+	while(my $seq=$seqin->next_seq()){	
+		my ($tmp_acc,$index,$mature,$grade)=split(/_/,$seq->display_id());
+		my $acc;
+		if (defined($grade)){
+			 $acc = $tmp_acc.'_'.$index."_".$grade;
+		 }else{
+			 $acc = $tmp_acc.'_'.$index;
+		 }
+
+		my $aln=Bio::SimpleAlign->new();
+		my $tmplocseq=Bio::LocatableSeq->new(
+			-display_id=>$acc,
+			-seq=>$seq->seq(),
+			-start=>1,
+			-end=>$seq->length()
+		);
+		$aln->add_seq($tmplocseq);
+		my ($sst_aln)=$mirna_fact->get_sst_aln($aln,1);
+		my $tmpseq=$sst_aln->{$acc};
+		next if !defined($tmpseq);
+		$mirnaSst->{$acc} = $tmpseq;
+
+		my @all_tags;
+		($tmpseq)=$aln->each_seq_with_id($acc);
+		next if !defined($tmpseq);
+		$tmpseq->seq(uc($tmpseq->seq()));
+		if (defined($tags_info->{$acc})){
+			my @tags=@{$tags_info->{$acc}};
+			my @tmp_all_tags;
+			foreach my $elem(@tags){
+				my $tmptag=Bio::LocatableSeq->new(
+					-display_id=>"tag",
+					-seq=>$elem->{"seq"},
+					-start=>1,
+					-end=>length($elem->{"seq"}),
+					-strand=>1
+				);
+				my $tag_rc = reverse $elem->{"seq"};
+				$tag_rc =~ tr/ACGTacgt/TGCAtgca/;
+				my $tmptag_rc=Bio::LocatableSeq->new(
+					-display_id=>"tag",
+					-seq=>uc($tag_rc),
+					-start=>1,
+					-end=>length($tag_rc),
+					-strand=>1
+				);
+
+				my ($aln_seq,$tagstart);
+				($aln_seq,$tagstart)=$seqana->aln_identity_seq($tmpseq,$tmptag);
+				if(! defined ($aln_seq)){
+					($aln_seq,$tagstart)=$seqana->aln_identity_seq($tmpseq,$tmptag_rc);
+				}
+				next if !defined($aln_seq);
+				my $aln_seq_str=$aln_seq->seq();
+				$aln_seq_str=~ s/T/U/sg;
+				$aln_seq_str=lc($aln_seq_str) if $elem->{"strand"} eq "-";
+				#throw out negative strand
+				#next if $elem->{"strand"} eq "-";
+				my $tag_line=$aln_seq_str." ".$elem->{"lib"}." ".$elem->{"copy"}." ".$elem->{"strand"}."\n";
+				push(@tmp_all_tags,{"tag"=>$tag_line,"pos"=>$tagstart});
+			}
+			my @sort_tags=sort {$a->{"pos"}<=>$b->{"pos"}} @tmp_all_tags;
+			grep{push(@all_tags,$_)}@sort_tags;
+			#--------------------------------------------------
+			# next if scalar(@sort_tags)<1;
+			#-------------------------------------------------- 
+		}
+
+		my $mirna_seq_len = length($mirnaSeq->{$acc});
+		my $mirna_seq=Bio::LocatableSeq->new(
+			-display_id=>"mirna",
+			-seq=>uc($mirnaSeq->{$acc}),
+			-start=>1,
+			-end=>$mirna_seq_len,
+			-strand=>1
+		);
+		my $tmpmat=Bio::LocatableSeq->new(
+			-display_id=>"seed",
+			-seq=>uc($matureSeq->{$acc}),
+			-start=>1,
+			-end=>length($matureSeq->{$acc}),
+			-strand=>1
+		);
+		my $mat_rc = reverse $matureSeq->{$acc};
+		$mat_rc =~ tr/ACGTacgt/TGCAtgca/;
+		my $tmpmat_rc=Bio::LocatableSeq->new(
+			-display_id=>"seed",
+			-seq=>uc($mat_rc),
+			-start=>1,
+			-end=>length($mat_rc),
+			-strand=>1
+		);
+		my $tmpseed=Bio::LocatableSeq->new(
+			-display_id=>"seed",
+			-seq=>uc($seed->{$acc}),
+			-start=>1,
+			-end=>length($seed->{$acc}),
+			-strand=>1
+		);
+		my $seed_rc = reverse $seed->{$acc};
+		$seed_rc =~ tr/ACGTacgt/TGCAtgca/;
+		my $tmpseed_rc=Bio::LocatableSeq->new(
+			-display_id=>"seed",
+			-seq=>uc($seed_rc),
+			-start=>1,
+			-end=>length($seed->{$acc}),
+			-strand=>1
+		);
+		my ($seed_aln_seq,$mat_aln_seq,$tagstart);
+		($mat_aln_seq,$tagstart)=$seqana->aln_identity_seq($mirna_seq,$tmpmat);
+		if (! defined($mat_aln_seq)){
+			($mat_aln_seq,$tagstart)=$seqana->aln_identity_seq($mirna_seq,$tmpmat_rc);
+		}
+		if(defined($mat_aln_seq)){
+			$matureAlignSeq->{$acc} = $mat_aln_seq->seq();
+			($seed_aln_seq,$tagstart)=$seqana->aln_identity_seq($mat_aln_seq,$tmpseed);
+			if (! defined($seed_aln_seq)){
+				($seed_aln_seq,$tagstart)=$seqana->aln_identity_seq($mat_aln_seq,$tmpseed_rc);
+			}
+			if (defined($seed_aln_seq)){
+				my $aln_seq_str=$seed_aln_seq->seq();
+				$aln_seq_str=~ s/T/U/sg;
+				$seedAlignSeq->{$acc}= $aln_seq_str;
+			}else{
+				$seedAlignSeq->{$acc}= "Seed can not be located: $seed->{$acc}"
+			}
+		}else{
+			($seed_aln_seq,$tagstart)=$seqana->aln_identity_seq($mirna_seq,$tmpseed);
+			if (! defined($seed_aln_seq)){
+				($seed_aln_seq,$tagstart)=$seqana->aln_identity_seq($mirna_seq,$tmpseed_rc);
+			}
+			if (defined($seed_aln_seq)){
+				my $aln_seq_str=$seed_aln_seq->seq();
+				$aln_seq_str=~ s/T/U/sg;
+				$seedAlignSeq->{$acc}= $aln_seq_str;
+			}else{
+				$seedAlignSeq->{$acc}= "Seed can not be located: $seed->{$acc}"
+			}
+		}
+
+
+		$readsInfo->{$acc}=();
+		if( $#all_tags >= 0){
+			foreach my $ref( @all_tags ){
+				push (@{$readsInfo->{$acc}}, $ref->{"tag"});
+			}
+		}else{
+			push (@{$readsInfo->{$acc}}, "No reads mapped to this miRNA.\n" );
+		}
+	}
+}
+
+sub displayAcc{
+	#--------------------------------------------------
+	# my ($none, $listboxID, $listboxSeq, $imagecanvar, $curAcc) = @_;
+	#-------------------------------------------------- 
+	my ($mirnaList, $listboxID, $listboxSeq, $imagecanvar) = @_;
+	my $curAcc;
+	my $mirnaIndex = $mirnaList->curselection;
+	if( $mirnaIndex){
+		$curAcc = $mirnaList->get($mirnaIndex);
+		$mirnaList->activate($mirnaIndex);
+		$mirnaList->focus();
+	}else{
+		last;
+	}
+	$listboxID->delete("1.0", 'end');
+	$listboxSeq->delete("1.0", 'end');
+	$imagecanvar -> delete();
+	my ($line_index);
+	
+	$listboxID->tagConfigure('right', -justify => 'right');
+	$listboxSeq->tagConfigure('red', -foreground=> 'red');
+	$listboxSeq->tagConfigure('blue', -foreground=> 'blue');
+
+
+	#===========================================load the id information
+	$listboxID->insert('end',"\n");
+	$listboxID->insert('end',"\n");
+	$listboxID->insert('end',$curAcc."\n",'right');
+	$listboxID->insert('end',"\n");
+	$listboxID->insert('end',"Position\n",'right');
+	$listboxID->insert('end',"\n");
+	$listboxID->insert('end',"Annotation\n\n",'right');
+	$listboxID->insert('end',"\n");
+	$listboxID->insert('end',"Seed\n",'right');
+	$listboxID->insert('end',"\n");
+	$listboxID->insert('end',"Structure"."\n",'right');
+	$listboxID->insert('end',"\n");
+	$listboxID->insert('end',"homoseq Seq"."\n",'right');
+	if (defined($homoSeqInfo->{$curAcc})){
+		for my $id ( @{$homoSeqInfo->{$curAcc}->{"ID"}}  ){
+			$listboxID->insert('end',$id."\n",'right');
+		}
+		$listboxID->insert('end',"\n");
+		$listboxID->insert('end',"Homoseq Sst"."\n",'right');
+		for my $id ( @{$homoSeqStructInfo->{$curAcc}->{"ID"}}  ){
+			$listboxID->insert('end',$id."\n",'right');
+		}
+	}else{
+		$listboxID->insert('end',"\n");
+	}
+	#--------------------------------------------------
+	# $listboxID->insert('end',"\n");
+	#-------------------------------------------------- 
+	$listboxID->insert('end',"\n");
+	$listboxID->insert('end',"Mapped reads\n",'right');
+	foreach my $ref (@{$readsInfo->{$curAcc}}){
+		$listboxID->insert('end',"\n");
+	}
+	
+	#============================================load the homolog information
+	my ($alnMirnaSeq,$alnMirnaSeqLen);
+	$listboxSeq->insert('end',"\n");
+	$listboxSeq->insert('end',"\n");
+
+	$line_index = 3;
+	my $mat_line_index = $line_index;
+	if(defined($mirnaAlignSeq->{$curAcc})){
+		$alnMirnaSeq = $mirnaAlignSeq->{$curAcc};
+	}else{
+		$alnMirnaSeq = $mirnaSeq->{$curAcc};
+	}
+	$alnMirnaSeqLen = length($alnMirnaSeq);
+	$listboxSeq->insert('end',$alnMirnaSeq."\n");
+	$listboxSeq->insert('end',"\n");
+	my $curPosInfo = join(", ", @{$posInfo->{$curAcc}}) if defined $posInfo->{$curAcc};
+	$listboxSeq->insert('end',$curPosInfo, "\n");
+	$listboxSeq->insert('end',"\n");
+
+	$listboxSeq->insert('end',"\n");
+	if(defined $mirbaseAnno->{$curAcc}{seed}){
+		$listboxSeq->insert('end',"example miRBase miRNA with the same seed: $mirbaseAnno->{$curAcc}{seed}", "\n") 
+	}else{
+		$listboxSeq->insert('end',"example miRBase miRNA with the same seed: none\n");
+	}
+	$listboxSeq->insert('end',"\n");
+	if(defined $mirbaseAnno->{$curAcc}{mature}){
+		$listboxSeq->insert('end',"example miRBase miRNA with the similar mature (80% identity): $mirbaseAnno->{$curAcc}{mature}", "\n") 
+	}else{
+		$listboxSeq->insert('end',"example miRBase miRNA with the similar mature (80% identity): none\n");
+	}
+	$listboxSeq->insert('end',"\n");
+
+	$line_index += 7;
+	my $seed_line_index = $line_index;
+	my $curSeedInfo = $seedAlignSeq->{$curAcc};
+	$listboxSeq->insert('end',"\n");
+	if(defined($curSeedInfo)){
+		$listboxSeq->insert('end',$curSeedInfo."\n");
+	}else{
+		$listboxSeq->insert('end',"\n");
+	}
+
+	if(defined($matureAlignSeq->{$curAcc})){
+		my $cur_mat_aln_seq = $matureAlignSeq->{$curAcc};
+		my $cur_seed_aln_seq = $seedAlignSeq->{$curAcc};
+		for (0..($alnMirnaSeqLen -1)){
+			my $tmpM = substr($cur_mat_aln_seq, $_, 1);
+			if($tmpM ne '-'){
+				$listboxSeq->tagAdd('blue', "$mat_line_index.$_");
+			}
+			my $tmpN = substr($cur_seed_aln_seq, $_, 1);
+			if($tmpN ne '-'){
+				$listboxSeq->tagAdd('red', "$seed_line_index.$_");
+			}
+		}
+	$listboxSeq->insert('end',"\n");
+	}
+
+	my @mirArr = split(//,$alnMirnaSeq);
+	$line_index = 6;
+	$listboxSeq->insert('end',"\n");
+	$listboxSeq->insert('end',$mirnaSst->{$curAcc}."\n");
+	$listboxSeq->insert('end',"\n\n");
+	if (defined($homoSeqInfo->{$curAcc}) && @mirArr){
+		for my $seq ( @{$homoSeqInfo->{$curAcc}->{"Seq"}}  ){
+			my @tmpArr = split(//,$seq);
+			for (my $i = 0; $i < $#mirArr; ++$i ){
+				$tmpArr[$i] = lc($tmpArr[$i]) if( $tmpArr[$i] ne $mirArr[$i] );
+			}
+			$seq = join("", @tmpArr);
+			$listboxSeq->insert('end',$seq."\n");
+			$line_index += 1;
+		}
+		$listboxSeq->insert('end',"\n");
+		$line_index += 2;
+		$listboxSeq->insert('end',"\n");
+		for my $seq ( @{$homoSeqStructInfo->{$curAcc}->{"Seq"}} ){
+			$listboxSeq->insert('end',$seq."\n");
+		}
+	}else{
+		$listboxSeq->insert('end',"No homologous information avaliable.\n\n");
+	}
+
+	if (defined($mirnaSst->{$curAcc})){
+		$listboxSeq->insert('end',"\n");
+	}else{
+		$listboxSeq->insert('end',"\n");
+	}
+
+	#--------------------------------------------------
+	# $listboxSeq->insert('end',"\n");
+	#-------------------------------------------------- 
+	if (defined($readsInfo->{$curAcc})){
+		foreach my $read (@{$readsInfo->{$curAcc}}){
+			$listboxSeq->insert('end',$read);
+		}
+	}
+
+	$imagecanvar -> create('image',0,0,-anchor=>'nw',-image=>$pngImages->{$curAcc}) if defined($pngImages->{$curAcc});
+}
+
+sub locateSeed{
+	my $tmpstr = $_[0];
+	my $i = 0;
+	while( substr($tmpstr, $i, 1) eq "-" )
+	{
+		++$i;
+	}
+	return $i;
+}
+
+sub shiftSeed{
+	my $tmpstr = $_[0];
+	$tmpstr = '-'.$tmpstr;
+	return $tmpstr;
+}
+
+sub locateSeq{
+	my $tmpHomo = $_[0];
+	my $tmpMirna = $_[1];
+	my $homoLen = length($tmpHomo);
+	my $mirnaLen = length($tmpMirna);
+	my ($subMirna,$newMirna,$tmpPos,$remLen);
+	$subMirna = substr($tmpMirna,0,15);
+	$tmpPos = index($tmpHomo,$subMirna);
+	if ($tmpPos >= 0 ){
+		$remLen = $homoLen - $mirnaLen - $tmpPos;
+		$newMirna = "-"x$tmpPos.$tmpMirna."-"x$remLen;
+	}else{
+		my $recMirna = &revComSeq($tmpMirna);
+		$subMirna = substr($recMirna,0,15);
+		$tmpPos = index($tmpHomo,$subMirna);
+		$remLen = $homoLen - $mirnaLen - $tmpPos;
+		$newMirna = "-"x$tmpPos.$recMirna."-"x$remLen;
+	}
+	return $newMirna;
+}
+
+sub locateSeqHomo{
+	my ($tmpAcc, $tmpMirna) = @_;
+	my $mirnaLen = length($tmpMirna);
+	my $mature = uc($matureSeq->{$tmpAcc});
+	my $returnSeq= " ";
+	my $returnId= " ";
+	for (my $i=0; $i<=$#{$homoSeqInfo->{$tmpAcc}->{"Seq"}}; $i++)
+	#for my $tmpSeq ( @{$homoSeqInfo->{$tmpAcc}->{"Seq"}}  )
+	{
+		my $tmpSeq = ${$homoSeqInfo->{$tmpAcc}->{"Seq"}}[$i];
+		my $curseq = uc($tmpSeq);
+		$curseq =~ s/-//g;
+		my $homoLen = length($tmpSeq);
+		my ($subMirna,$tmpPos,$matPos);
+		$subMirna = uc(substr($tmpMirna,0,25));
+		$tmpPos = index($curseq,$subMirna);
+		if ($tmpPos >= 0 ){
+			$matPos = index($curseq,$mature);
+			if ($matPos >= 0){
+				$returnSeq = $tmpSeq;
+				$returnId= ${$homoSeqInfo->{$tmpAcc}->{"ID"}}[$i];
+			}else{
+				my $recMat = &revComSeq($mature);
+				$matPos = index($curseq,$recMat);
+				if ($matPos >= 0){
+					$returnSeq = $tmpSeq;
+					$returnId= ${$homoSeqInfo->{$tmpAcc}->{"ID"}}[$i];
+				}
+			}
+		}else{
+			my $recMirna = &revComSeq($tmpMirna);
+			$subMirna = substr($recMirna,0,25);
+			$tmpPos = index($curseq,$subMirna);
+			if ($tmpPos >= 0 ){
+				$matPos = index($curseq,$mature);
+				if ($matPos >= 0){
+					$returnSeq = $tmpSeq;
+					$returnId= ${$homoSeqInfo->{$tmpAcc}->{"ID"}}[$i];
+				}else{
+					my $recMat = &revComSeq($mature);
+					$matPos = index($curseq,$recMat);
+					if ($matPos >= 0){
+						$returnSeq = $tmpSeq;
+						$returnId= ${$homoSeqInfo->{$tmpAcc}->{"ID"}}[$i];
+					}
+				}
+			}
+		}
+	}
+	return ($returnSeq, $returnId);
+}
+
+sub revComRna{
+	my $tmpRNA = reverse $_[0];
+	$tmpRNA =~ tr/ACGUacgu/UGCAugca/;
+	return $tmpRNA ;
+}
+
+sub revComSeq{
+	my $tmpDNA = reverse $_[0];
+	$tmpDNA =~ tr/ACGTacgt/TGCAtgca/;
+	return $tmpDNA;
+}
+
+sub getAcc{
+	my $seqName = $_[0];
+	my @tmpArr = split(/_/, $seqName);
+	my $tmpAcc;
+	if( $#tmpArr >= 3){
+		$tmpAcc = join('_', $tmpArr[0],$tmpArr[1],$tmpArr[2]);
+	}else{
+		$tmpAcc = join('_', $tmpArr[0],$tmpArr[1]);
+	}
+	return $tmpAcc;
+}

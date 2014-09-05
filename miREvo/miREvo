@@ -1,0 +1,146 @@
+#!/bin/bash
+
+program_dir=`dirname $0`
+
+shopt -s -o nounset
+declare -rx SCRIPT=${0##*/}
+declare -i argc
+declare -x argv
+
+function Usage {
+	printf "%s\n" "Usage: $SCRIPT <command> [options]"
+	printf "\t%s\t\t%s\n" "filter" "filter the useless reads"
+	printf "\t%s\t\t%s\n" "predict" "run miRdeep for microRNA prediction"
+	printf "\t%s\t\t%s\n" "display" "show the miRNA structure and reads alignment"
+	printf "\t%s\t\t%s\n" "homoseq" "show the homolog alignment information"
+	return 0
+}
+
+function USAGE_F {
+	echo ""
+	echo "Usage: miREvo filter -o prefix -i reads.fas -d database -H known.miRNA -M mature.fa [options]"
+	echo "    Options for filter reads"
+	echo "        -o  <str>   abbreviation for project name, 3 letter code for the sequencing library or the species of interest, required"
+	echo "        -i  <str>   sequence reads file in FASTA format, uniqe merged, required"
+	echo "        -d  <str>   The prefix of the bowtie index, constructed from a Fasta file contain known tRNAs, sRNA, etc., recommmanded"
+	echo "                    For instance, if the reference is 'database.fasta', then the prefix is 'database' and building-command is:"
+	echo "                    'bowtie-build -f database.fasta database'"
+	echo "        -H  <str>   Botwtie index for known miRNAs' hairpin sequences. These should be the known haripin sequences for the species being analyzed."
+	echo "                    the miRNAs' ID must be in miRBase format, for example '>dme-miR-1'"
+	echo "        -M  <str>   fasta file with miRNAs mature. These should be the known mature sequences for the species being analyzed."
+	echo "                    the miRNAs' ID must be in miRBase format, for example '>dme-miR-1-5p'"
+	echo ""
+	echo "    Options for Bowtie:"
+	echo "        -v  <int>   maximum number of mismatches allowed on a read when mapping to the Repeat Database, <=2. default=2bp"
+	echo "        -p  <int>   number of processors to use, default=1"
+}
+
+function USAGE_P {
+	echo ""
+	echo "Usage: miREvo predict -o prefix -r reference -M mature.fa -s other.mature.fa [options]"
+	echo "    Options for miRNA prediction:"
+	echo "        -o  <str>     abbreviation for project name, 3 letter code for the sequencing library or the species of interest, required"
+	echo "        -r  <str>     The prefix of the bowtie index, for the genome reference file"
+	echo "                      For instance, if the reference is 'reference.fasta', then the prefix is 'reference' and building-command is:"
+	echo "                      'bowtie-build -f reference.fasta reference'"
+	echo "        -M  <str>     miRNAs mature reference, miRBase miRNA sequences in fasta format. These should be the known mature sequences"
+	echo "                      for the species being analyzed."
+	echo "        -s  <str>     miRBase miRNA sequences in fasta format. These should be the pooled known mature sequences for 1-5 species"
+	echo "                      closely related to the species being analyzed."
+	echo "        -b  <int>     minimum score cut-off for predicted novel miRNAs to be displayed, default=1"
+	echo "        -c            disable randfold analysis"
+	echo "        -g  <int>     maximum number of precursors to analyze when automatic excision gearing is used."
+	echo "                      default=50000, if set to -1 all precursors will be analyzed"
+	echo "        -u  <str>     species being analyzed - this is used to link to the appropriate UCSC browser entry"
+	echo "        -t  <int>     temperature cut-off for RNAfold when calculating secondary structures of RNAs, default=22"
+	echo "        -m  <1/2/3>   predicttion model, 1: animal; 2: monocot; 3 dicots.  default=1"
+	echo ""
+	echo "    Options for Bowtie:"
+	echo "        -p  <int>   number of processors to use, default=1"
+	echo "        -k  <int>   a read is allowed to map up to this number of positions in the genome, default=5; for plant, 15 is recommaned"
+}
+
+function USAGE_D {
+	echo ""
+	echo "Usage: miREvo display -o prefix -i reads.fasta -S miRNA.fasta [options]"
+	echo "    Options for miRNA query"
+	echo "        -o  <str>   abbreviation for project name, 3 letter code for the sequencing library or the species of interest, required"
+	echo "        -i  <str>   fasta file with sequencing reads, required"
+	echo "        -M  <str>   fasta file with MATURE sequence of known miRNAs, optional"
+	echo "                    the miRNAs' ID must be in miRBase format, for example '>dme-miR-1-5p'"
+	echo "        -H  <str>   fasta file with PRECURSOR sequence of known miRNAs, optional"
+	echo "                    the miRNAs' ID must be in miRBase format, for example '>dme-miR-1'"
+	echo "        -t  <int>   temperature cut-off for RNAfold when calculating secondary structures of RNAs, default=22"
+	echo ""
+	echo "    Options for Bowtie:"
+	echo "        -p  <int>   number of processors to use, default=1"
+	echo "        -k  <int>   a read is allowed to map up to this number of positions in the genome, default=5; for plant, 15 is recommaned"
+}
+
+function USAGE_H {
+	echo ""
+	echo "Usage: miREvo homoseq -o prefix -i reads -H hairpin -M mature.fa -r reference.fasta -m in.maf [options]"
+	echo "    Options for homolog searching"
+	echo "        -o  <str>   abbreviation for project name, 3 letter code for the sequencing library or the species of interest, required"
+	echo "        -i  <str>   sequence reads file in FASTA format, uniqe merged, required"
+	echo "        -r  <str>   reference file, FASTA format, required"
+	echo "        -m  <str>   The UCSC MAF file ( Multiple Alignment Format file), required"
+	echo "        -H  <str>   Botwtie index for known miRNAs' hairpin sequences. These should be the known haripin sequences for the species being analyzed."
+	echo "                    the miRNAs' ID must be in miRBase format, for example '>dme-miR-1'"
+	echo "        -M  <str>   fasta file with miRNAs mature. These should be the known mature sequences for the species being analyzed."
+	echo "                    the miRNAs' ID must be in miRBase format, for example '>dme-miR-1-5p'"
+	echo "        -s  <str>   miRBase miRNA sequences in fasta format. These should be the pooled known mature sequences for 1-5 species"
+	echo "                    closely related to the species being analyzed."
+	echo "        -c  <str>   liftOver file (chain file), "
+	echo "        -t  <int>   temperature cut-off for RNAfold when calculating secondary structures of RNAs, default=22"
+	echo ""
+	echo "    Options for Bowtie:"
+	echo "        -p  <int>   number of processors to use, default=1"
+}
+
+
+if [ $# -eq 0 ] ; then
+	Usage
+	exit 192
+fi
+
+let "argc = $# -1"
+argv=`echo $@ |  cut -d " " -f2-`
+
+function runFilter {
+		if [ $argc -eq 0 ]; then
+			USAGE_F
+			exit 192
+		else
+			$program_dir/script/pipline_filter.sh $argv
+		fi
+}
+
+function runPredict {
+		if [ $argc -eq 0 ]; then
+			USAGE_P
+			exit 192
+		else
+			$program_dir/script/pipline_predict.sh $argv
+		fi
+}
+
+function runHomoseq {
+		if [ $argc -eq 0 ]; then
+			USAGE_H
+			exit 192
+		else
+			$program_dir/script/pipline_homoseq.sh $argv
+		fi
+}
+
+case $1 in
+	filter) 		runFilter;;
+	predict) 		runPredict;;
+	#--------------------------------------------------
+	# display) 		runDisplay;;
+	#-------------------------------------------------- 
+	homoseq) 		runHomoseq;;
+	-h|"--help") 	Usage;;
+	*) 				echo "Unknow option: $1"; echo;	Usage;;
+esac
